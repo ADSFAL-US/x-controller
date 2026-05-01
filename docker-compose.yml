@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  3x-controller:
+    build: .
+    container_name: 3x-controller
+    restart: unless-stopped
+    ports:
+      - "${CONTROLLER_PORT:-8080}:8080"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - DATABASE_URL=sqlite:////app/data/subscriptions.db
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    networks:
+      - 3x-network
+    # Создаем директорию перед запуском
+    entrypoint: ["sh", "-c", "mkdir -p /app/data && chmod 777 /app/data && gunicorn -w 4 -b 0.0.0.0:8080 --timeout 60 app.main:app"]
+
+networks:
+  3x-network:
+    driver: bridge

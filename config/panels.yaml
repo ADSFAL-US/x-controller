@@ -1,0 +1,23 @@
+# Конфигурация 3x-ui панелей
+# Добавьте свои панели в список
+
+panels:
+  - name: panel-1
+    host: http://localhost:2053
+    username: admin
+    password: admin
+    # Приоритет панели (чем меньше, тем выше приоритет)
+    priority: 1
+    # Максимальное количество клиентов на панели
+    max_clients: 100
+    # Путь к подписке (по умолчанию /sub, может быть /avava-vpn или другой)
+    sub_path: /sub
+
+  # Пример второй панели:
+  # - name: panel-2
+  #   host: http://192.168.1.100:2053
+  #   username: admin
+  #   password: secret
+  #   priority: 2
+  #   max_clients: 200
+  #   sub_path: /custom-sub

@@ -187,6 +187,24 @@ class SyncService:
                 client_data = base_client_data.copy()
                 client_data['email'] = _generate_random_email()
                 
+                # Add reality settings from inbound stream config
+                stream_settings_str = inbound.get('streamSettings', '{}')
+                try:
+                    stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str
+                    reality_settings = stream_settings.get('realitySettings', {})
+                    if reality_settings:
+                        # Copy shortIds from inbound reality config
+                        short_ids = reality_settings.get('shortIds', reality_settings.get('shortId', []))
+                        if short_ids:
+                            if isinstance(short_ids, list):
+                                client_data['shortIds'] = short_ids
+                            else:
+                                client_data['shortIds'] = [short_ids]
+                        # Also copy other reality settings if needed
+                        logger.debug(f"Added reality shortIds for {subscription.email} on inbound {inbound_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to parse streamSettings for inbound {inbound_id}: {e}")
+                
                 success = False
                 error_msg = None
                 

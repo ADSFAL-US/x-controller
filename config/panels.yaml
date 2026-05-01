@@ -3,21 +3,23 @@
 
 panels:
   - name: panel-1
+    # Базовый хост без путей (без секретного пути панели)
     host: http://localhost:2053
+    # Секретный путь к панели (если панель защищена подпутем, например /F3cpGfVrFucX4pkB7z)
+    panel_path: ''
+    # Путь к подписке относительно корня (например /sub или /avava-vpn)
+    sub_path: /sub
     username: admin
     password: admin
-    # Приоритет панели (чем меньше, тем выше приоритет)
     priority: 1
-    # Максимальное количество клиентов на панели
     max_clients: 100
-    # Путь к подписке (по умолчанию /sub, может быть /avava-vpn или другой)
-    sub_path: /sub
 
-  # Пример второй панели:
+  # Пример второй панели с секретным путем и кастомной подпиской:
   # - name: panel-2
-  #   host: http://192.168.1.100:2053
+  #   host: https://2.26.20.199:49238
+  #   panel_path: /F3cpGfVrFucX4pkB7z
+  #   sub_path: /avava-vpn
   #   username: admin
   #   password: secret
   #   priority: 2
   #   max_clients: 200
-  #   sub_path: /custom-sub

@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 class PanelConfig:
     """Конфигурация панели."""
     name: str
-    host: str
+    host: str  # Базовый хост без путей, например https://panel.example.com:2053
     username: str
     password: str
     priority: int = 1
     max_clients: int = 100
-    sub_path: str = '/sub'  # Путь к подписке (может быть /avava-vpn и т.д.)
+    panel_path: str = ''  # Путь к панели, например /secret-path (если панель на подпути)
+    sub_path: str = '/sub'  # Путь к подписке относительно корня, например /avava-vpn
 
 
 class XUIPanel:
@@ -37,9 +38,12 @@ class XUIPanel:
         })
     
     def login(self) -> bool:
-        """Авторизация в панели через /login."""
+        """
+        Авторизоваться в панели 3x-ui.
+        POST {panel_path}/login
+        """
         try:
-            url = f"{self.config.host}/login"
+            url = f"{self.config.host}{self.config.panel_path}/login"
             data = {
                 "username": self.config.username,
                 "password": self.config.password
@@ -62,9 +66,11 @@ class XUIPanel:
             return False
     
     def get_inbounds(self) -> List[Dict[str, Any]]:
-        """Получить список inbounds через GET /panel/api/inbounds/list."""
+        """
+        Получить список inbounds через GET {panel_path}/panel/api/inbounds/list.
+        """
         try:
-            url = f"{self.config.host}/panel/api/inbounds/list"
+            url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/list"
             response = self.session.get(url, timeout=30)
             
             if response.status_code == 200:
@@ -84,14 +90,14 @@ class XUIPanel:
     def add_client(self, inbound_id: int, client_data: Dict[str, Any]) -> bool:
         """
         Добавить клиента к inbound.
-        POST /panel/api/inbounds/addClient
+        POST {panel_path}/panel/api/inbounds/addClient
         
         Формат данных:
         - id: inbound ID (int)
         - settings: JSON-строка с объектом {"clients": [...]}
         """
         try:
-            url = f"{self.config.host}/panel/api/inbounds/addClient"
+            url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/addClient"
             
             # Важно: settings должен быть строкой JSON
             settings = json.dumps({"clients": [client_data]})
@@ -122,12 +128,12 @@ class XUIPanel:
     def update_client(self, inbound_id: int, client_id: str, client_data: Dict[str, Any]) -> bool:
         """
         Обновить клиента.
-        POST /panel/api/inbounds/updateClient/{clientId}
+        POST {panel_path}/panel/api/inbounds/updateClient/{clientId}
         
         Формат данных тот же, что и для add_client.
         """
         try:
-            url = f"{self.config.host}/panel/api/inbounds/updateClient/{client_id}"
+            url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/updateClient/{client_id}"
             
             settings = json.dumps({"clients": [client_data]})
             
@@ -157,10 +163,10 @@ class XUIPanel:
     def delete_client(self, inbound_id: int, client_id: str) -> bool:
         """
         Удалить клиента.
-        POST /panel/api/inbounds/{id}/delClient/{clientId}
+        POST {panel_path}/panel/api/inbounds/{id}/delClient/{clientId}
         """
         try:
-            url = f"{self.config.host}/panel/api/inbounds/{inbound_id}/delClient/{client_id}"
+            url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/{inbound_id}/delClient/{client_id}"
             
             response = self.session.post(url, timeout=30)
             
@@ -182,10 +188,10 @@ class XUIPanel:
     def get_client_traffic(self, email: str) -> Dict[str, Any]:
         """
         Получить статистику трафика клиента по email.
-        GET /panel/api/inbounds/getClientTraffics/{email}
+        GET {panel_path}/panel/api/inbounds/getClientTraffics/{email}
         """
         try:
-            url = f"{self.config.host}/panel/api/inbounds/getClientTraffics/{email}"
+            url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/getClientTraffics/{email}"
             
             response = self.session.get(url, timeout=30)
             

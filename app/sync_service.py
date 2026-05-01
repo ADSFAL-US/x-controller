@@ -3,6 +3,7 @@
 import json
 import logging
 import random
+import secrets
 import string
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -19,6 +20,11 @@ def _generate_random_email(length: int = 12) -> str:
     """Generate a completely random email string that xui accepts."""
     chars = string.ascii_lowercase + string.digits
     return ''.join(random.choices(chars, k=length))
+
+
+def _generate_short_id(length_bytes: int = 8) -> str:
+    """Generate random hex shortId for Reality protocol."""
+    return secrets.token_hex(length_bytes)
 
 
 class SyncService:
@@ -187,6 +193,21 @@ class SyncService:
                 client_data = base_client_data.copy()
                 client_data['email'] = _generate_random_email()
                 
+                # Check if inbound uses Reality and generate unique shortId
+                stream_settings_str = inbound.get('streamSettings', '{}')
+                is_reality = False
+                try:
+                    stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
+                    is_reality = bool(stream_settings.get('realitySettings'))
+                except Exception:
+                    pass
+                
+                if is_reality and action in ('create', 'update'):
+                    # Generate unique shortId for this client
+                    short_id = _generate_short_id(8)
+                    client_data['shortIds'] = [short_id]
+                    logger.debug(f"Generated shortId {short_id} for {subscription.email} on inbound {inbound_id}")
+                
                 success = False
                 error_msg = None
                 
@@ -207,7 +228,7 @@ class SyncService:
                             if not success:
                                 error_msg = f"Failed to update client in inbound {inbound_id}"
                         else:
-                            # Client not in this inbound, add it
+                            # Client not in this inbound, add it (treat as create)
                             success = panel.add_client(inbound_id, client_data)
                             if not success:
                                 error_msg = f"Failed to add client to inbound {inbound_id}"

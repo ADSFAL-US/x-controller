@@ -333,7 +333,7 @@ class XUIClient:
                 panel_config = PanelConfig(**panel_data)
                 panel = XUIPanel(panel_config)
                 self.panels.append(panel)
-                logger.info(f"Загружена панель: {panel_config.name} ({panel_config.host})")
+                logger.info(f"Загружена панель: {panel_config.name} ({panel_config.host}), sub_path={panel_config.sub_path}")
             
             # Сортировка по приоритету
             self.panels.sort(key=lambda p: p.config.priority)

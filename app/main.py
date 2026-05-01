@@ -984,8 +984,6 @@ def api_settings():
 @app.route('/api/sync/all', methods=['POST'])
 def sync_all_subscriptions():
     """Force sync all subscriptions with panels."""
-    from .sync_service import sync_service
-    
     try:
         subs = Subscription.query.all()
         results = []
@@ -1011,8 +1009,6 @@ def sync_all_subscriptions():
 @app.route('/api/sync/<int:subscription_id>', methods=['POST'])
 def sync_single_subscription(subscription_id):
     """Force sync specific subscription with panels."""
-    from .sync_service import sync_service
-    
     try:
         sub = Subscription.query.get_or_404(subscription_id)
         result = sync_service.schedule_sync(sub.id, force=True)

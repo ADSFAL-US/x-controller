@@ -614,39 +614,44 @@ def subscription_link(token):
     for panel in xui_client.panels:
         try:
             panel.login()
-            # Find client sub_id on this panel
-            inbounds = panel.get_inbounds()
             client_sub_id = None
             
-            for inbound in inbounds:
-                settings_str = inbound.get('settings', '{}')
-                try:
-                    settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
-                    clients = settings.get('clients', [])
-                    for client in clients:
-                        if client.get('id') == sub.uuid:
-                            # Found client - get sub_id from client data
-                            client_sub_id = client.get('subId') or client.get('id')
+            # Use saved sub_id if available
+            if sub.sub_id:
+                client_sub_id = sub.sub_id
+                logger.debug(f"Panel {panel.config.name}: using saved sub_id={client_sub_id}")
+            else:
+                # Find client sub_id on this panel by UUID
+                inbounds = panel.get_inbounds()
+                for inbound in inbounds:
+                    settings_str = inbound.get('settings', '{}')
+                    try:
+                        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                        clients = settings.get('clients', [])
+                        for client in clients:
+                            if client.get('id') == sub.uuid:
+                                client_sub_id = client.get('subId') or client.get('id')
+                                break
+                        if client_sub_id:
                             break
-                    if client_sub_id:
-                        break
-                except:
-                    continue
+                    except Exception:
+                        continue
             
             if client_sub_id:
-                # Get ready subscription from panel
+                # Get ready subscription from panel using sub_id
                 sub_content = panel.get_subscription_content(client_sub_id)
                 if sub_content:
                     try:
-                        # Decode base64 and split into URIs
                         decoded = base64.b64decode(sub_content).decode('utf-8')
                         uris = [u.strip() for u in decoded.split('\n') if u.strip()]
                         all_uris.extend(uris)
-                        logger.info(f"Panel {panel.config.name}: added {len(uris)} configs")
+                        logger.info(f"Panel {panel.config.name}: added {len(uris)} configs via sub_id={client_sub_id}")
                     except Exception as e:
                         logger.warning(f"Panel {panel.config.name}: failed to decode subscription: {e}")
+                else:
+                    logger.warning(f"Panel {panel.config.name}: empty subscription for sub_id={client_sub_id}")
             else:
-                logger.warning(f"Panel {panel.config.name}: client not found")
+                logger.warning(f"Panel {panel.config.name}: client not found for uuid={sub.uuid}")
         except Exception:
             logger.exception(f"Failed to collect configs from {panel.config.name}")
     

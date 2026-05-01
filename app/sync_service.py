@@ -187,24 +187,6 @@ class SyncService:
                 client_data = base_client_data.copy()
                 client_data['email'] = _generate_random_email()
                 
-                # Add reality settings from inbound stream config
-                stream_settings_str = inbound.get('streamSettings', '{}')
-                try:
-                    stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str
-                    reality_settings = stream_settings.get('realitySettings', {})
-                    if reality_settings:
-                        # Copy shortIds from inbound reality config
-                        short_ids = reality_settings.get('shortIds', reality_settings.get('shortId', []))
-                        if short_ids:
-                            if isinstance(short_ids, list):
-                                client_data['shortIds'] = short_ids
-                            else:
-                                client_data['shortIds'] = [short_ids]
-                        # Also copy other reality settings if needed
-                        logger.debug(f"Added reality shortIds for {subscription.email} on inbound {inbound_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to parse streamSettings for inbound {inbound_id}: {e}")
-                
                 success = False
                 error_msg = None
                 
@@ -254,6 +236,27 @@ class SyncService:
                 
                 # Log per-inbound attempt
                 self._log_sync(subscription, f"{panel.config.name}/inbound-{inbound_id}", action, success, error_msg)
+            
+            # After successful create/update, fetch subId from panel for subscription link
+            if panel_success and action in ('create', 'update'):
+                try:
+                    fresh_inbounds = panel.get_inbounds()
+                    for inbound in fresh_inbounds:
+                        settings_str = inbound.get('settings', '{}')
+                        try:
+                            settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                            clients = settings.get('clients', [])
+                            for client in clients:
+                                if client.get('id') == subscription.uuid:
+                                    sub_id = client.get('subId')
+                                    if sub_id and sub_id != subscription.sub_id:
+                                        subscription.sub_id = sub_id
+                                        logger.info(f"Updated sub_id for {subscription.email}: {sub_id}")
+                                    break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.warning(f"Failed to fetch subId from panel {panel.config.name}: {e}")
             
             results[panel.config.name] = {
                 'success': panel_success, 

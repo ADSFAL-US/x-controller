@@ -6,6 +6,7 @@ set -e
 INSTALL_DIR="/opt/3x-controller"
 PROJECT_NAME="3x-controller"
 CONFIG_FILE="$INSTALL_DIR/.env"
+REPO_URL="https://github.com/ADSFAL-US/x-controller.git"
 
 # Цвета
 RED='\033[0;31m'
@@ -62,11 +63,17 @@ check_root() {
 install_new() {
     log_info "Новая установка в $INSTALL_DIR"
     
-    mkdir -p "$INSTALL_DIR"
+    # Клонируем репозиторий
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        log_info "Репозиторий уже существует, обновляем..."
+        cd "$INSTALL_DIR"
+        git pull origin master
+    else
+        log_info "Клонирование репозитория..."
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
     
-    # Копируем текущие файлы (для локального деплоя)
-    # В проде здесь будет git clone
-    log_info "Копирование файлов..."
+    cd "$INSTALL_DIR"
     
     # Запрашиваем порт
     read -p "Enter port for controller [8080]: " user_port
@@ -93,7 +100,21 @@ EOF
         log_success "Port updated to: $CONTROLLER_PORT"
     fi
     
-    cd "$INSTALL_DIR"
+    # Создаем config директорию с примером если нет
+    if [ ! -f "$INSTALL_DIR/config/panels.yaml" ]; then
+        mkdir -p "$INSTALL_DIR/config"
+        cat > "$INSTALL_DIR/config/panels.yaml" << 'EOF'
+panels:
+  - name: panel-1
+    host: http://localhost:2053
+    username: admin
+    password: admin
+    priority: 1
+    max_clients: 100
+    sub_path: /sub
+EOF
+        log_info "Создан пример config/panels.yaml - отредактируйте под ваши панели"
+    fi
     
     log_info "Сборка..."
     docker compose build --no-cache
@@ -113,7 +134,13 @@ update_existing() {
     log_info "Остановка..."
     docker compose down
     
-    # TODO: git pull если есть репозиторий
+    # Обновляем из репозитория
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        log_info "Обновление из репозитория..."
+        git pull origin master
+    else
+        log_warning "Не найден git репозиторий, пропускаем обновление кода"
+    fi
     
     log_info "Пересборка..."
     docker compose build --no-cache

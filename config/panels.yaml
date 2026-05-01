@@ -16,9 +16,10 @@ panels:
 
   # Пример второй панели с секретным путем и кастомной подпиской:
   # - name: panel-2
-  #   host: https://2.26.20.199:49238
-  #   panel_path: /F3cpGfVrFucX4pkB7z
-  #   sub_path: /avava-vpn
+  #   host: https://2.26.20.199:49238          # API панели (секретный путь)
+  #   panel_path: /F3cpGfVrFucX4pkB7z          # Путь к панели
+  #   sub_host: https://2.26.20.199:8080       # Отдельный хост для подписок (опционально)
+  #   sub_path: /avava-vpn                     # Путь к подписке
   #   username: admin
   #   password: secret
   #   priority: 2

@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 class PanelConfig:
     """Конфигурация панели."""
     name: str
-    host: str  # Базовый хост без путей, например https://panel.example.com:2053
+    host: str  # Базовый хост для API панели, например https://panel.example.com:2053
     username: str
     password: str
     priority: int = 1
     max_clients: int = 100
-    panel_path: str = ''  # Путь к панели, например /secret-path (если панель на подпути)
-    sub_path: str = '/sub'  # Путь к подписке относительно корня, например /avava-vpn
+    panel_path: str = ''  # Путь к панели API, например /secret-path
+    sub_host: str = ''  # Отдельный хост для подписок (если отличается от host)
+    sub_path: str = '/sub'  # Путь к подписке
 
 
 class XUIPanel:
@@ -256,9 +257,10 @@ class XUIPanel:
         Возвращает base64-encoded контент подписки.
         """
         try:
-            # Используем кастомный sub_path из конфига панели
+            # Используем отдельный sub_host если задан, иначе host
+            sub_host = (self.config.sub_host or self.config.host).rstrip('/')
             sub_path = self.config.sub_path.rstrip('/')
-            url = f"{self.config.host}{sub_path}/{sub_id}"
+            url = f"{sub_host}{sub_path}/{sub_id}"
             
             response = self.session.get(url, timeout=30)
             

@@ -989,11 +989,11 @@ def sync_all_subscriptions():
         results = []
         
         for sub in subs:
-            result = sync_service.schedule_sync(sub.id, force=True)
+            result = sync_service.sync_subscription(sub, 'update')
             results.append({
                 'subscription_id': sub.id,
                 'email': sub.email,
-                'scheduled': result
+                'result': result
             })
         
         return jsonify({
@@ -1011,12 +1011,12 @@ def sync_single_subscription(subscription_id):
     """Force sync specific subscription with panels."""
     try:
         sub = Subscription.query.get_or_404(subscription_id)
-        result = sync_service.schedule_sync(sub.id, force=True)
+        result = sync_service.sync_subscription(sub, 'update')
         
         return jsonify({
             'success': True,
-            'message': f'Scheduled sync for subscription {subscription_id}',
-            'scheduled': result
+            'message': f'Synced subscription {subscription_id}',
+            'result': result
         })
     except Exception as e:
         logger.exception(f"Failed to sync subscription {subscription_id}")

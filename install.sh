@@ -107,11 +107,23 @@ EOF
 panels:
   - name: panel-1
     host: http://localhost:2053
+    panel_path: ''
+    sub_path: /sub
     username: admin
     password: admin
     priority: 1
     max_clients: 100
-    sub_path: /sub
+
+  # Пример с секретным путем и отдельным хостом для подписок:
+  # - name: panel-2
+  #   host: https://panel.example.com:2053
+  #   panel_path: /secret-path
+  #   sub_host: https://sub.example.com:8080
+  #   sub_path: /avava-vpn
+  #   username: admin
+  #   password: secret
+  #   priority: 2
+  #   max_clients: 200
 EOF
         log_info "Создан пример config/panels.yaml - отредактируйте под ваши панели"
     fi

@@ -1,0 +1,33 @@
+# Clash rules example for Russian services bypass
+# Paste these into Global Settings -> Custom Clash Rules
+
+- GEOIP,RU,DIRECT
+- GEOSITE,category-ru,DIRECT
+- GEOSITE,yandex,DIRECT
+- GEOSITE,mail.ru,DIRECT
+- GEOSITE,vk,DIRECT
+- GEOSITE,ok.ru,DIRECT
+- GEOSITE,avito,DIRECT
+- DOMAIN-SUFFIX,yandex.ru,DIRECT
+- DOMAIN-SUFFIX,yandex.net,DIRECT
+- DOMAIN-SUFFIX,vk.com,DIRECT
+- DOMAIN-SUFFIX,vk.ru,DIRECT
+- DOMAIN-SUFFIX,ok.ru,DIRECT
+- DOMAIN-SUFFIX,mail.ru,DIRECT
+- DOMAIN-SUFFIX,avito.ru,DIRECT
+- DOMAIN-SUFFIX,avito.net,DIRECT
+- DOMAIN-SUFFIX,ozon.ru,DIRECT
+- DOMAIN-SUFFIX,wildberries.ru,DIRECT
+- DOMAIN-SUFFIX,sberbank.ru,DIRECT
+- DOMAIN-SUFFIX,tinkoff.ru,DIRECT
+- DOMAIN-SUFFIX,vtb.ru,DIRECT
+- DOMAIN-SUFFIX,gosuslugi.ru,DIRECT
+- DOMAIN-SUFFIX,nalog.ru,DIRECT
+- DOMAIN-SUFFIX,pfr.gov.ru,DIRECT
+- DOMAIN-SUFFIX,mos.ru,DIRECT
+- DOMAIN-SUFFIX,spb.ru,DIRECT
+- DOMAIN-SUFFIX,2gis.ru,DIRECT
+- DOMAIN-SUFFIX,kontur.ru,DIRECT
+- DOMAIN-SUFFIX,skbkontur.ru,DIRECT
+- DOMAIN-SUFFIX,githubusercontent.com,PROXY
+- MATCH,PROXY

@@ -8,6 +8,7 @@ import secrets
 import urllib.parse
 import uuid as uuid_lib
 from datetime import datetime
+from typing import List
 from flask import Flask, jsonify, request, render_template_string, redirect, url_for
 
 from app.xui_client import XUIClient
@@ -687,15 +688,48 @@ def subscription_link(token):
         'Content-Type': 'text/plain; charset=utf-8',
         'profile-title': profile_title,
         'subscription-userinfo': sub_info,
-        'profile-update-interval': '1'
+        'profile-update-interval': '1',
     }
+    if gsettings.sub_description:
+        headers['profile-description'] = gsettings.sub_description[:200]
     
     # Return based on format
     if is_clash:
-        # For Clash, return simple URI list (Clash can parse it)
-        uri_text = '\n'.join(all_uris)
-        encoded = base64.b64encode(uri_text.encode()).decode()
-        return encoded, 200, headers
+        # Build full Clash YAML with proxies, groups, and rules
+        proxies = []
+        for panel in xui_client.panels:
+            try:
+                panel.login()
+                inbounds = panel.get_inbounds()
+                for inbound in inbounds:
+                    settings_str = inbound.get('settings', '{}')
+                    try:
+                        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                        clients = settings.get('clients', [])
+                        for client in clients:
+                            if client.get('id') == sub.uuid:
+                                remark = f"{panel.config.name}-{sub.email}"
+                                protocol = inbound.get('protocol', 'vless')
+                                listen = inbound.get('listen', '0.0.0.0')
+                                port = inbound.get('port', 443)
+                                # Use panel's sub_host if set, otherwise use inbound listen
+                                host = panel.config.sub_host or panel.config.host
+                                if listen == '0.0.0.0':
+                                    listen = host
+                                proxy = _build_clash_proxy(remark, protocol, listen, port, client, inbound.get('streamSettings', '{}'))
+                                proxies.append(proxy)
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        
+        if not proxies:
+            return "No active configurations found", 404
+        
+        yaml_text = _build_clash_yaml(proxies, gsettings.custom_rules or '')
+        headers['Content-Type'] = 'text/yaml; charset=utf-8'
+        return yaml_text, 200, headers
     else:
         # Base64-encoded URI list (standard for v2rayN/Shadowrocket/happ)
         uri_text = '\n'.join(all_uris)
@@ -766,6 +800,48 @@ def _build_vless_uri(host, port, uuid, remark, flow, stream_settings_str):
     return f"vless://{uuid}@{host}:{port}?{query}#{name}"
 
 
+RUSSIAN_SERVICES_RULES = [
+    'DOMAIN-SUFFIX,yandex.ru,DIRECT',
+    'DOMAIN-SUFFIX,yandex.net,DIRECT',
+    'DOMAIN-SUFFIX,ya.ru,DIRECT',
+    'DOMAIN-SUFFIX,vk.com,DIRECT',
+    'DOMAIN-SUFFIX,vk.ru,DIRECT',
+    'DOMAIN-SUFFIX,ok.ru,DIRECT',
+    'DOMAIN-SUFFIX,mail.ru,DIRECT',
+    'DOMAIN-SUFFIX,avito.ru,DIRECT',
+    'DOMAIN-SUFFIX,avito.net,DIRECT',
+    'DOMAIN-SUFFIX,ozon.ru,DIRECT',
+    'DOMAIN-SUFFIX,wildberries.ru,DIRECT',
+    'DOMAIN-SUFFIX,wb.ru,DIRECT',
+    'DOMAIN-SUFFIX,sberbank.ru,DIRECT',
+    'DOMAIN-SUFFIX,sber.ru,DIRECT',
+    'DOMAIN-SUFFIX,tinkoff.ru,DIRECT',
+    'DOMAIN-SUFFIX,vtb.ru,DIRECT',
+    'DOMAIN-SUFFIX,alfabank.ru,DIRECT',
+    'DOMAIN-SUFFIX,gosuslugi.ru,DIRECT',
+    'DOMAIN-SUFFIX,nalog.ru,DIRECT',
+    'DOMAIN-SUFFIX,pfr.gov.ru,DIRECT',
+    'DOMAIN-SUFFIX,mos.ru,DIRECT',
+    'DOMAIN-SUFFIX,spb.ru,DIRECT',
+    'DOMAIN-SUFFIX,2gis.ru,DIRECT',
+    'DOMAIN-SUFFIX,kontur.ru,DIRECT',
+    'DOMAIN-SUFFIX,skbkontur.ru,DIRECT',
+    'DOMAIN-SUFFIX,gismeteo.ru,DIRECT',
+    'DOMAIN-SUFFIX,kinopoisk.ru,DIRECT',
+    'DOMAIN-SUFFIX,hd.kinopoisk.ru,DIRECT',
+    'DOMAIN-SUFFIX,ivi.ru,DIRECT',
+    'DOMAIN-SUFFIX,mts.ru,DIRECT',
+    'DOMAIN-SUFFIX,megafon.ru,DIRECT',
+    'DOMAIN-SUFFIX,beeline.ru,DIRECT',
+    'DOMAIN-SUFFIX,tele2.ru,DIRECT',
+    'DOMAIN-SUFFIX,rt.ru,DIRECT',
+    'DOMAIN-SUFFIX,gosuslugi.ru,DIRECT',
+    'DOMAIN-SUFFIX,mos.ru,DIRECT',
+    'GEOIP,RU,DIRECT',
+    'GEOSITE,category-ru,DIRECT',
+]
+
+
 def _build_clash_proxy(name, protocol, host, port, client, stream_settings_str):
     """Build Clash proxy config dict."""
     try:
@@ -811,6 +887,67 @@ def _build_clash_proxy(name, protocol, host, port, client, stream_settings_str):
         proxy['servername'] = sni
     
     return proxy
+
+
+def _build_clash_yaml(proxies: List[dict], custom_rules: str = '') -> str:
+    """Build full Clash YAML config with proxies, proxy-groups, and rules."""
+    proxy_names = [p['name'] for p in proxies]
+    
+    lines = ['proxies:']
+    for p in proxies:
+        lines.append(f'  - name: {p["name"]}')
+        lines.append(f'    type: {p["type"]}')
+        lines.append(f'    server: {p["server"]}')
+        lines.append(f'    port: {p["port"]}')
+        lines.append(f'    uuid: {p["uuid"]}')
+        if 'flow' in p:
+            lines.append(f'    flow: {p["flow"]}')
+        if p.get('tls'):
+            lines.append('    tls: true')
+        if 'network' in p:
+            lines.append(f'    network: {p["network"]}')
+        if 'ws-opts' in p:
+            lines.append('    ws-opts:')
+            for k, v in p['ws-opts'].items():
+                if isinstance(v, dict):
+                    lines.append(f'      {k}:')
+                    for kk, vv in v.items():
+                        lines.append(f'        {kk}: {vv}')
+                else:
+                    lines.append(f'      {k}: {v}')
+        if 'grpc-opts' in p:
+            lines.append('    grpc-opts:')
+            for k, v in p['grpc-opts'].items():
+                lines.append(f'      {k}: {v}')
+        if 'servername' in p:
+            lines.append(f'    servername: {p["servername"]}')
+    
+    lines.append('')
+    lines.append('proxy-groups:')
+    lines.append('  - name: Proxy')
+    lines.append('    type: select')
+    lines.append('    proxies:')
+    for name in proxy_names:
+        lines.append(f'      - {name}')
+    lines.append('      - DIRECT')
+    
+    lines.append('')
+    lines.append('rules:')
+    
+    # Custom rules first (highest priority)
+    if custom_rules:
+        for rule in custom_rules.strip().split('\n'):
+            rule = rule.strip()
+            if rule and not rule.startswith('#'):
+                lines.append(f'  - {rule}')
+    
+    # Russian services bypass
+    for rule in RUSSIAN_SERVICES_RULES:
+        lines.append(f'  - {rule}')
+    
+    lines.append('  - MATCH,Proxy')
+    
+    return '\n'.join(lines)
 
 
 SUBSCRIPTION_GUIDE_HTML = """

@@ -36,7 +36,8 @@ db.init_app(app)
 # Создаем таблицы при старте (с защитой от race condition в multi-worker gunicorn)
 with app.app_context():
     try:
-        from sqlalchemy import inspect
+        from sqlalchemy import inspect, text
+        from sqlalchemy.exc import OperationalError
         inspector = inspect(db.engine)
         existing_tables = inspector.get_table_names()
         if 'subscriptions' not in existing_tables:
@@ -44,6 +45,33 @@ with app.app_context():
             logger.info("Database tables created")
         else:
             logger.info("Database tables already exist")
+        
+        # Run migrations for missing columns
+        if 'global_settings' in existing_tables:
+            existing_columns = {col['name'] for col in inspector.get_columns('global_settings')}
+            
+            migrations = [
+                ('sub_expire_enabled', 'BOOLEAN DEFAULT 0'),
+                ('sub_expire_button_link', 'VARCHAR(255)'),
+                ('sub_info_button_text', 'VARCHAR(25)'),
+                ('sub_info_button_link', 'VARCHAR(255)'),
+                ('announce_text', 'TEXT'),
+                ('fallback_url', 'VARCHAR(255)'),
+                ('profile_web_page_url', 'VARCHAR(255)'),
+                ('support_url', 'VARCHAR(255)'),
+                ('happ_routing_enabled', 'BOOLEAN DEFAULT 0'),
+                ('happ_routing_config', 'TEXT'),
+            ]
+            
+            for col_name, col_type in migrations:
+                if col_name not in existing_columns:
+                    try:
+                        db.session.execute(text(f"ALTER TABLE global_settings ADD COLUMN {col_name} {col_type}"))
+                        db.session.commit()
+                        logger.info(f"Migration: added column {col_name} to global_settings")
+                    except OperationalError as e:
+                        logger.warning(f"Migration: column {col_name} may already exist: {e}")
+                        db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
         logger.info("Database tables likely created by another worker")

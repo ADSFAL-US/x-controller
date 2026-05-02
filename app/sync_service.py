@@ -3,7 +3,6 @@
 import json
 import logging
 import random
-import secrets
 import string
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -22,9 +21,43 @@ def _generate_random_email(length: int = 12) -> str:
     return ''.join(random.choices(chars, k=length))
 
 
-def _generate_short_id(length_bytes: int = 8) -> str:
-    """Generate random hex shortId for Reality protocol."""
-    return secrets.token_hex(length_bytes)
+def _get_used_short_ids(inbound: dict) -> set:
+    """Extract shortIds already assigned to clients in this inbound."""
+    used = set()
+    settings_str = inbound.get('settings', '{}')
+    try:
+        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str or {}
+        clients = settings.get('clients', [])
+        for client in clients:
+            client_short_ids = client.get('shortIds', [])
+            if isinstance(client_short_ids, str):
+                client_short_ids = [client_short_ids]
+            for sid in client_short_ids:
+                if sid:
+                    used.add(sid)
+    except Exception:
+        pass
+    return used
+
+
+def _get_available_short_id(inbound: dict) -> Optional[str]:
+    """Get first available shortId from pool that's not used by any client."""
+    stream_settings_str = inbound.get('streamSettings', '{}')
+    try:
+        stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
+        reality_settings = stream_settings.get('realitySettings', {})
+        pool = reality_settings.get('shortIds', reality_settings.get('shortId', []))
+        if isinstance(pool, str):
+            pool = [pool]
+        if not pool:
+            return None
+        used = _get_used_short_ids(inbound)
+        for sid in pool:
+            if sid and sid not in used:
+                return sid
+    except Exception:
+        pass
+    return None
 
 
 class SyncService:
@@ -193,20 +226,33 @@ class SyncService:
                 client_data = base_client_data.copy()
                 client_data['email'] = _generate_random_email()
                 
-                # Check if inbound uses Reality and generate unique shortId
+                # Check if inbound uses Reality and determine flow/shortId
                 stream_settings_str = inbound.get('streamSettings', '{}')
                 is_reality = False
+                network = 'tcp'
                 try:
                     stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
                     is_reality = bool(stream_settings.get('realitySettings'))
+                    network = stream_settings.get('network', 'tcp')
                 except Exception:
                     pass
                 
+                # Auto-determine flow based on transport type
+                if is_reality:
+                    if network in ('xhttp', 'splithttp', 'httpupgrade'):
+                        client_data['flow'] = 'xtls-rprx-vision-udp443'
+                    elif network == 'tcp':
+                        client_data['flow'] = 'xtls-rprx-vision'
+                    # else: leave flow unset for other transports
+                
                 if is_reality and action in ('create', 'update'):
-                    # Generate unique shortId for this client
-                    short_id = _generate_short_id(8)
-                    client_data['shortIds'] = [short_id]
-                    logger.debug(f"Generated shortId {short_id} for {subscription.email} on inbound {inbound_id}")
+                    # Get available shortId from panel's pool
+                    short_id = _get_available_short_id(inbound)
+                    if short_id:
+                        client_data['shortIds'] = [short_id]
+                        logger.debug(f"Assigned shortId {short_id} for {subscription.email} on inbound {inbound_id}")
+                    else:
+                        logger.warning(f"No available shortId in pool for {subscription.email} on inbound {inbound_id}")
                 
                 success = False
                 error_msg = None
@@ -224,6 +270,13 @@ class SyncService:
                             # Use existing client_id from panel
                             client_id = found['client_id']
                             client_data['id'] = client_id
+                            # Preserve existing shortId if any
+                            existing_short_ids = found['client'].get('shortIds', [])
+                            if existing_short_ids:
+                                if isinstance(existing_short_ids, str):
+                                    existing_short_ids = [existing_short_ids]
+                                client_data['shortIds'] = existing_short_ids
+                                logger.debug(f"Preserved shortIds {existing_short_ids} for {subscription.email}")
                             success = panel.update_client(inbound_id, client_id, client_data)
                             if not success:
                                 error_msg = f"Failed to update client in inbound {inbound_id}"

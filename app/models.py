@@ -104,8 +104,7 @@ class Subscription(db.Model):
         
         if self.tg_id:
             result['tgId'] = self.tg_id
-        if self.flow:
-            result['flow'] = self.flow
+        # flow is determined per-inbound in sync_service based on transport type
             
         return result
     

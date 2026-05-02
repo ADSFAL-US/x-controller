@@ -679,6 +679,11 @@ def subscription_link(token):
         except Exception:
             pass
     
+    def _utf8_header(value: str) -> str:
+        """Encode UTF-8 string so it passes through WSGI latin-1 headers.
+        Gunicorn will encode back to bytes, producing valid UTF-8 for the client."""
+        return value.encode('utf-8').decode('latin-1')
+
     # Happ headers: traffic in bytes!
     total_bytes = int((sub.total_gb or 0) * 1024 * 1024 * 1024)
     sub_info = f"upload={total_up}; download={total_down}; total={total_bytes}; expire={expire_timestamp}"
@@ -686,16 +691,12 @@ def subscription_link(token):
     
     headers = {
         'Content-Type': 'text/plain; charset=utf-8',
-        'profile-title': profile_title,
+        'profile-title': _utf8_header(profile_title),
         'subscription-userinfo': sub_info,
         'profile-update-interval': '1',
     }
-    
-    # Build description comment for non-clash clients (Happ, etc.)
-    # HTTP headers must be latin-1; description goes into subscription body as comment
-    description_comment = ''
-    if gsettings.sub_description and not is_clash:
-        description_comment = f"#desc: {gsettings.sub_description[:200]}\n"
+    if gsettings.sub_description:
+        headers['profile-description'] = _utf8_header(gsettings.sub_description[:200])
     
     # Return based on format
     if is_clash:
@@ -736,8 +737,7 @@ def subscription_link(token):
         return yaml_text, 200, headers
     else:
         # Base64-encoded URI list (standard for v2rayN/Shadowrocket/happ)
-        # Prepend description comment for happ client metadata
-        uri_text = description_comment + '\n'.join(all_uris)
+        uri_text = '\n'.join(all_uris)
         encoded = base64.b64encode(uri_text.encode()).decode()
         return encoded, 200, headers
 

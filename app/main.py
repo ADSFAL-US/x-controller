@@ -700,6 +700,32 @@ def subscription_link(token):
         headers['sub-info-text'] = _utf8_header(gsettings.sub_description[:200])
         headers['sub-info-color'] = 'blue'
     
+    # Happ metadata headers
+    if gsettings.sub_expire_enabled:
+        headers['sub-expire'] = '1'
+    if gsettings.sub_expire_button_link:
+        headers['sub-expire-button-link'] = gsettings.sub_expire_button_link
+    if gsettings.sub_info_button_text:
+        headers['sub-info-button-text'] = _utf8_header(gsettings.sub_info_button_text[:25])
+    if gsettings.sub_info_button_link:
+        headers['sub-info-button-link'] = gsettings.sub_info_button_link
+    if gsettings.announce_text:
+        headers['announce'] = _utf8_header(gsettings.announce_text[:200])
+    if gsettings.fallback_url:
+        headers['fallback-url'] = gsettings.fallback_url
+    if gsettings.profile_web_page_url:
+        headers['profile-web-page-url'] = gsettings.profile_web_page_url
+    if gsettings.support_url:
+        headers['support-url'] = gsettings.support_url
+    
+    # Happ custom routing (custom-tunnel-config)
+    if gsettings.happ_routing_enabled:
+        routing_config = gsettings.happ_routing_config
+        if not routing_config:
+            # Default RoscomVPN JSONSUB configuration
+            routing_config = '{"Name":"RoscomVPN","GlobalProxy":"true","UseChunkFiles":"false","RemoteDns":"8.8.8.8","DomesticDns":"77.88.8.8","RemoteDNSType":"DoH","RemoteDNSDomain":"https://8.8.8.8/dns-query","RemoteDNSIP":"8.8.8.8","DomesticDNSType":"DoH","DomesticDNSDomain":"https://77.88.8.8/dns-query","DomesticDNSIP":"77.88.8.8","Geoipurl":"https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip@202605020543/release/geoip.dat","Geositeurl":"https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geosite@202604152235/release/geosite.dat","RouteOrder":"block-proxy-direct","DirectSites":[],"DirectIp":[],"ProxySites":[],"ProxyIp":[],"BlockSites":[],"BlockIp":[],"DomainStrategy":"IPIfNonMatch","FakeDNS":"false"}'
+        headers['custom-tunnel-config'] = _utf8_header(routing_config)
+    
     # Return based on format
     if is_clash:
         # Build full Clash YAML with proxies, groups, and rules
@@ -963,38 +989,361 @@ SUBSCRIPTION_GUIDE_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Subscription Guide</title>
+    <title>Подписка VPN - {{ email }}</title>
     <style>
-        body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #1a1a2e; color: #eee; }
-        h1 { color: #00d4ff; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; background: #1a1a2e; color: #eee; line-height: 1.6; }
+        h1 { color: #00d4ff; margin-bottom: 10px; }
+        h2 { color: #00d4ff; margin-top: 30px; border-bottom: 2px solid #00d4ff; padding-bottom: 10px; }
+        h3 { color: #00d4ff; margin-top: 20px; }
         .card { background: #16213e; border-radius: 12px; padding: 20px; margin: 15px 0; }
-        .link { background: #0f3460; padding: 12px; border-radius: 8px; word-break: break-all; font-family: monospace; font-size: 14px; }
-        button { background: #00d4ff; color: #1a1a2e; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        .step { display: flex; align-items: center; margin: 10px 0; }
-        .step-num { background: #00d4ff; color: #1a1a2e; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 12px; flex-shrink: 0; }
+        .link { background: #0f3460; padding: 15px; border-radius: 8px; word-break: break-all; font-family: monospace; font-size: 14px; border: 1px solid #00d4ff; }
+        button { background: #00d4ff; color: #1a1a2e; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; }
+        button:hover { background: #33ddff; }
+        .btn-success { background: #28a745; color: white; }
+        .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+        .tab { background: #0f3460; padding: 10px 20px; border-radius: 20px; cursor: pointer; border: 2px solid transparent; }
+        .tab:hover { background: #1a4a7a; }
+        .tab.active { border-color: #00d4ff; background: #00d4ff; color: #1a1a2e; font-weight: bold; }
+        .platform-content { display: none; }
+        .platform-content.active { display: block; }
+        .step { display: flex; align-items: flex-start; margin: 15px 0; }
+        .step-num { background: #00d4ff; color: #1a1a2e; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 12px; flex-shrink: 0; margin-top: 2px; }
+        .step-content { flex: 1; }
+        .note { background: #2d4a6a; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #00d4ff; margin: 15px 0; }
+        .warning { background: #5a4a2a; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #ffc107; margin: 15px 0; }
+        a { color: #00d4ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .recommendation { color: #ffc107; font-weight: bold; }
+        ul { margin: 10px 0; padding-left: 25px; }
+        li { margin: 8px 0; }
+        .header-info { font-size: 14px; color: #aaa; margin-bottom: 20px; }
     </style>
 </head>
 <body>
-    <h1>VPN Subscription</h1>
-    <div class="card">
-        <p><strong>User:</strong> {{ email }}</p>
-        <p>Your subscription link:</p>
-        <div class="link" id="sub-link">{{ sub_url }}</div>
-        <br>
-        <button onclick="copyLink()">Copy Link</button>
-    </div>
+    <h1>📡 Подписка VPN</h1>
+    <p class="header-info"><strong>Пользователь:</strong> {{ email }}</p>
     
     <div class="card">
-        <h3>How to use:</h3>
-        <div class="step"><div class="step-num">1</div>Install Clash, v2rayN, or Shadowrocket</div>
-        <div class="step"><div class="step-num">2</div>Copy the link above</div>
-        <div class="step"><div class="step-num">3</div>Paste into your app as subscription URL</div>
+        <h3>🔗 Ваша ссылка подписки:</h3>
+        <div class="link" id="sub-link">{{ sub_url }}</div>
+        <br>
+        <button id="copy-btn" onclick="copyLink()">📋 Копировать ссылку</button>
+        <p style="font-size: 12px; color: #888; margin-top: 10px;">Нажмите кнопку, чтобы скопировать ссылку для импорта в клиент</p>
+    </div>
+    
+    <h2>📱 Выберите платформу</h2>
+    <div class="tabs">
+        <div class="tab active" onclick="showPlatform('android')">Android</div>
+        <div class="tab" onclick="showPlatform('ios')">iOS</div>
+        <div class="tab" onclick="showPlatform('windows')">Windows</div>
+        <div class="tab" onclick="showPlatform('macos')">macOS</div>
+        <div class="tab" onclick="showPlatform('linux')">Linux</div>
+        <div class="tab" onclick="showPlatform('openwrt')">OpenWRT</div>
+    </div>
+    
+    <!-- Android -->
+    <div id="android" class="platform-content active">
+        <div class="card">
+            <h3>📱 Android</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Скачайте клиент</strong><br>
+                    Мы настоятельно рекомендуем <span class="recommendation">Happ</span> — скачайте из <a href="https://play.google.com/store/apps/details?id=com.happProxy" target="_blank">Google Play</a> или <a href="https://github.com/Happ-proxy/happ-android/releases" target="_blank">GitHub</a>.<br>
+                    Также можно использовать любой другой клиент с поддержкой VLESS/Vmess: V2rayNG, Clash Meta for Android.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Настройка клиента</strong><br>
+                    Happ по умолчанию уже отлично настроен. Если настройки сломались, их можно откатить: шестеренка → листаем вниз → красная кнопка "Сброс" → сброс настроек.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Импортируйте подписку</strong><br>
+                    Скопируйте ссылку подписки (кнопка выше), затем в Happ: справа вверху плюсик → "Вставить из буфера обмена".
+                </div>
+            </div>
+            
+            <div class="note">
+                <strong>💡 Рекомендации:</strong><br>
+                • Обновляйте подписку — клиент делает это автоматически, но если что-то не работает, обновите вручную прежде чем писать в поддержку.<br>
+                • Не все конфиги доступны разом — это особенность нашего подхода. Есть несколько конфигов под разные задачи, и в разных условиях сети некоторые могут быть недоступны.<br>
+                • Для проверки доступности: справа от названия подписки нажмите кнопку спидометра. Клиент покажет пинг (мс) или "н/д" (не доступно).
+            </div>
+        </div>
+    </div>
+    
+    <!-- iOS -->
+    <div id="ios" class="platform-content">
+        <div class="card">
+            <h3>🍎 iOS / iPadOS</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Скачайте клиент</strong><br>
+                    Рекомендуем <span class="recommendation">Happ</span> из <a href="https://apps.apple.com/app/happ-proxy-utility/id6504287215" target="_blank">App Store</a> (нужен Apple ID другого региона) или <a href="https://testflight.apple.com/join/..." target="_blank">TestFlight</a>.<br>
+                    Альтернативы: Streisand, Shadowrocket (если доступен в вашем регионе).
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Импорт подписки</strong><br>
+                    Скопируйте ссылку подписки (кнопка выше). В Happ нажмите "+" вверху → "Добавить подписку" → вставьте URL.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Включите VPN</strong><br>
+                    Нажмите на переключатель рядом с подпиской. При первом подключении система попросит разрешение — нажмите "Разрешить".
+                </div>
+            </div>
+            
+            <div class="note">
+                <strong>💡 Совет:</strong> На iOS для стабильной работы рекомендуем использовать Happ с включённым "Include all networks" в настройках TUN (iOS 16.4+).
+            </div>
+        </div>
+    </div>
+    
+    <!-- Windows -->
+    <div id="windows" class="platform-content">
+        <div class="card">
+            <h3>🪟 Windows</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Скачайте клиент</strong><br>
+                    Рекомендуем <span class="recommendation">Happ</span> — скачайте с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub Releases</a>.<br>
+                    Альтернативы: v2rayN, Clash Verge, Clash Verge Rev, Hiddify.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Импорт подписки</strong><br>
+                    Happ сразу предложит импортировать подписку при первом запуске. Просто следуйте инструкциям.<br>
+                    Если нужно импортировать ещё раз: слева вверху плюсик в квадрате → "Subscription name": любое название → "Subscription URL": вставьте URL подписки.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Настройка клиента (важно!)</strong><br>
+                    В главном меню выберите режим <strong>TUN</strong> вместо Proxy.<br>
+                    Затем: Settings → Advanced Settings → Set system proxy: НЕТ, TUN: ДА.<br>
+                    Если по какой-то причине что-то продолжает работать напрямую, а не через туннель — перезапустите программу. Она подтянет настройки TUN.
+                </div>
+            </div>
+            
+            <div class="warning">
+                <strong>⚠️ Важно:</strong> На Windows режим Proxy работает только для приложений с поддержкой системного прокси. Для полной маршрутизации всего трафика используйте TUN режим.
+            </div>
+        </div>
+    </div>
+    
+    <!-- macOS -->
+    <div id="macos" class="platform-content">
+        <div class="card">
+            <h3>🍏 macOS</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Скачайте клиент</strong><br>
+                    Рекомендуем <span class="recommendation">Happ</span> — скачайте с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub</a> (файл .dmg).<br>
+                    Альтернативы: Clash Verge, ClashX.Meta, V2RayXS, Streisand (из Mac App Store).
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Установка</strong><br>
+                    Откройте .dmg файл и перетащите Happ в Applications. При первом запуске может потребоваться разрешение в Системных настройках → Конфиденциальность и безопасность.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Импорт подписки</strong><br>
+                    Скопируйте ссылку подписки. В Happ нажмите "+" → вставьте URL подписки → нажмите OK.
+                </div>
+            </div>
+            
+            <div class="note">
+                <strong>💡 Совет:</strong> На macOS рекомендуем использовать Happ или Clash Verge в режиме TUN для максимальной совместимости со всеми приложениями.
+            </div>
+        </div>
+    </div>
+    
+    <!-- Linux -->
+    <div id="linux" class="platform-content">
+        <div class="card">
+            <h3>🐧 Linux</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Скачайте клиент</strong><br>
+                    Рекомендуем <span class="recommendation">Happ</span> — скачайте AppImage с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub</a>.<br>
+                    Альтернативы: Clash Verge Rev (AppImage), Hiddify, sing-box (CLI), v2rayA (Web UI).
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Запуск Happ (AppImage)</strong><br>
+                    Сделайте файл исполняемым: <code>chmod +x happ-desktop-*.AppImage</code><br>
+                    Запустите: <code>./happ-desktop-*.AppImage</code><br>
+                    Или используйте <a href="https://appimage.github.io/AppImageLauncher/" target="_blank">AppImageLauncher</a> для интеграции в систему.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Импорт подписки</strong><br>
+                    В Happ нажмите "+" в левом верхнем углу → введите название → вставьте URL подписки.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">4</div>
+                <div class="step-content">
+                    <strong>TUN режим (для всей системы)</strong><br>
+                    В настройках Happ включите TUN режим. Это требует прав root — Happ попросит пароль sudo.<br>
+                    Альтернатива: запустите Happ с правами sudo: <code>sudo ./happ-desktop-*.AppImage</code>
+                </div>
+            </div>
+            
+            <div class="note">
+                <strong>💡 Для продвинутых пользователей:</strong><br>
+                Можно использовать sing-box или Xray напрямую через CLI с конфигом, сконвертированным из подписки через <a href="https://v2rayse.com" target="_blank">v2rayse.com</a>.
+            </div>
+        </div>
+    </div>
+    
+    <!-- OpenWRT -->
+    <div id="openwrt" class="platform-content">
+        <div class="card">
+            <h3>📡 OpenWRT (роутер)</h3>
+            
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <strong>Установите необходимые пакеты</strong><br>
+                    Через SSH на роутере выполните:<br>
+                    <code>opkg update && opkg install sing-box v2ray-geoip v2ray-geosite</code><br>
+                    Или для Xray: <code>opkg install xray-core</code>
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <strong>Конвертируйте подписку в конфиг</strong><br>
+                    Подписка в формате base64 URI list. Используйте конвертер <a href="https://v2rayse.com" target="_blank">v2rayse.com</a> или скрипт:<br>
+                    <code>echo 'ВАША_ССЫЛКА_BASE64' | base64 -d</code> получите URI, затем вставьте вручную в sing-box/Xray конфиг.
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <strong>Настройка sing-box</strong><br>
+                    Создайте конфиг <code>/etc/sing-box/config.json</code> с outbounds из ваших URI и routing rules для РФ (дописывайте direct для geosite:ru, geoip:ru).<br>
+                    Включите службу: <code>/etc/init.d/sing-box enable && /etc/init.d/sing-box start</code>
+                </div>
+            </div>
+            
+            <div class="warning">
+                <strong>⚠️ Требуется опыт:</strong> Настройка VPN на роутере требует понимания сетей. При неправильной конфигурации вы потеряете доступ к роутеру.
+            </div>
+            
+            <div class="note">
+                <strong>📚 Рекомендуем:</strong> Используйте готовые решения с OpenWRT + sing-box:<br>
+                • <a href="https://github.com/ophub/luci-app-sing-box" target="_blank">luci-app-sing-box</a> — Web UI для управления<br>
+                • <a href="https://github.com/xiaorouji/openwrt-passwall" target="_blank">OpenWrt Passwall</a> — комплексное решение
+            </div>
+        </div>
     </div>
     
     <script>
+        function showPlatform(platform) {
+            // Hide all
+            document.querySelectorAll('.platform-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            
+            // Show selected
+            document.getElementById(platform).classList.add('active');
+            event.target.classList.add('active');
+        }
+        
         function copyLink() {
-            navigator.clipboard.writeText(document.getElementById('sub-link').innerText);
-            alert('Copied!');
+            const linkText = document.getElementById('sub-link').innerText;
+            const btn = document.getElementById('copy-btn');
+            
+            // Try modern clipboard API first
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(linkText).then(function() {
+                    showSuccess(btn);
+                }, function(err) {
+                    fallbackCopy(linkText, btn);
+                });
+            } else {
+                fallbackCopy(linkText, btn);
+            }
+        }
+        
+        function fallbackCopy(text, btn) {
+            // Create temporary textarea
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            
+            try {
+                const successful = document.execCommand('copy');
+                if (successful) {
+                    showSuccess(btn);
+                } else {
+                    alert('Не удалось скопировать. Пожалуйста, скопируйте вручную.');
+                }
+            } catch (err) {
+                alert('Не удалось скопировать. Пожалуйста, скопируйте вручную.');
+            }
+            
+            document.body.removeChild(textArea);
+        }
+        
+        function showSuccess(btn) {
+            const originalText = btn.innerText;
+            btn.innerText = '✅ Скопировано!';
+            btn.classList.add('btn-success');
+            setTimeout(function() {
+                btn.innerText = originalText;
+                btn.classList.remove('btn-success');
+            }, 2000);
         }
     </script>
 </body>
@@ -1016,6 +1365,20 @@ def global_settings():
         settings.custom_direct_countries = request.form.get('custom_direct_countries', '')
         settings.auto_sync_enabled = request.form.get('auto_sync_enabled') == 'on'
         settings.auto_sync_interval_minutes = int(request.form.get('auto_sync_interval_minutes', 30) or 30)
+        
+        # Happ metadata
+        settings.sub_expire_enabled = request.form.get('sub_expire_enabled') == 'on'
+        settings.sub_expire_button_link = request.form.get('sub_expire_button_link', '')
+        settings.sub_info_button_text = request.form.get('sub_info_button_text', '')
+        settings.sub_info_button_link = request.form.get('sub_info_button_link', '')
+        settings.announce_text = request.form.get('announce_text', '')
+        settings.fallback_url = request.form.get('fallback_url', '')
+        settings.profile_web_page_url = request.form.get('profile_web_page_url', '')
+        settings.support_url = request.form.get('support_url', '')
+        
+        # Happ routing
+        settings.happ_routing_enabled = request.form.get('happ_routing_enabled') == 'on'
+        settings.happ_routing_config = request.form.get('happ_routing_config', '')
         
         db.session.commit()
         return redirect('/settings')
@@ -1097,6 +1460,76 @@ def global_settings():
                 <div class="help">Минимум 5 минут между синхронизациями</div>
             </div>
             
+            <hr style="margin: 30px 0;">
+            <h3>Happ Subscription Metadata</h3>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="sub_expire_enabled" {% if settings.sub_expire_enabled %}checked{% endif %}>
+                    Enable Subscription Expire Notifications
+                </label>
+                <div class="help">Показывать уведомления об истечении подписки (3 дня до и после)</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Expire Button Link:</label>
+                <input type="text" name="sub_expire_button_link" value="{{ settings.sub_expire_button_link or '' }}">
+                <div class="help">Ссылка для кнопки "Renew" при истечении (Telegram, URL)</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Info Button Text:</label>
+                <input type="text" name="sub_info_button_text" value="{{ settings.sub_info_button_text or '' }}" maxlength="25">
+                <div class="help">Текст кнопки в info-блоке (макс. 25 символов)</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Info Button Link:</label>
+                <input type="text" name="sub_info_button_link" value="{{ settings.sub_info_button_link or '' }}">
+                <div class="help">Ссылка для info-кнопки (поддержка, чат)</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Announce Text:</label>
+                <textarea name="announce_text">{{ settings.announce_text or '' }}</textarea>
+                <div class="help">Всплывающее уведомление при обновлении подписки (до 200 символов или base64)</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Profile Web Page URL:</label>
+                <input type="text" name="profile_web_page_url" value="{{ settings.profile_web_page_url or '' }}">
+                <div class="help">Ссылка на сайт/канал, отображается в профиле подписки</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Support URL:</label>
+                <input type="text" name="support_url" value="{{ settings.support_url or '' }}">
+                <div class="help">Ссылка на поддержку (отображается как кнопка "?")</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Fallback URL:</label>
+                <input type="text" name="fallback_url" value="{{ settings.fallback_url or '' }}">
+                <div class="help">Резервный URL подписки если основной недоступен</div>
+            </div>
+            
+            <hr style="margin: 30px 0;">
+            <h3>Happ Routing (чтобы IP нод не попадал в черный список)</h3>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="happ_routing_enabled" {% if settings.happ_routing_enabled %}checked{% endif %}>
+                    Enable Happ Custom Routing
+                </label>
+                <div class="help">Передавать routing конфигурацию через custom-tunnel-config. Гос. сервисы пойдут мимо туннеля.</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Custom Routing JSON:</label>
+                <textarea name="happ_routing_config" style="min-height: 200px;">{{ settings.happ_routing_config or '' }}</textarea>
+                <div class="help">JSON конфигурация для Happ routing. Оставьте пустым для использования RoscomVPN JSONSUB по умолчанию. Генератор: <a href="https://routing.happ.su" target="_blank">routing.happ.su</a></div>
+            </div>
+            
             <button type="submit">Save Settings</button>
         </form>
     </body>
@@ -1123,6 +1556,30 @@ def api_settings():
             settings.custom_rules = data['custom_rules']
         if 'custom_direct_countries' in data:
             settings.custom_direct_countries = data['custom_direct_countries']
+        
+        # Happ metadata
+        if 'sub_expire_enabled' in data:
+            settings.sub_expire_enabled = bool(data['sub_expire_enabled'])
+        if 'sub_expire_button_link' in data:
+            settings.sub_expire_button_link = data['sub_expire_button_link']
+        if 'sub_info_button_text' in data:
+            settings.sub_info_button_text = data['sub_info_button_text']
+        if 'sub_info_button_link' in data:
+            settings.sub_info_button_link = data['sub_info_button_link']
+        if 'announce_text' in data:
+            settings.announce_text = data['announce_text']
+        if 'fallback_url' in data:
+            settings.fallback_url = data['fallback_url']
+        if 'profile_web_page_url' in data:
+            settings.profile_web_page_url = data['profile_web_page_url']
+        if 'support_url' in data:
+            settings.support_url = data['support_url']
+        
+        # Happ routing
+        if 'happ_routing_enabled' in data:
+            settings.happ_routing_enabled = bool(data['happ_routing_enabled'])
+        if 'happ_routing_config' in data:
+            settings.happ_routing_config = data['happ_routing_config']
         
         db.session.commit()
         return jsonify({'success': True, 'settings': settings.to_dict()})

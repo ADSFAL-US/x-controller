@@ -192,6 +192,20 @@ class GlobalSettings(db.Model):
     auto_sync_enabled = db.Column(db.Boolean, default=True)
     auto_sync_interval_minutes = db.Column(db.Integer, default=30)  # минуты между синхронизациями
     
+    # Happ subscription metadata
+    sub_expire_enabled = db.Column(db.Boolean, default=False)
+    sub_expire_button_link = db.Column(db.String(255), nullable=True)
+    sub_info_button_text = db.Column(db.String(25), nullable=True)
+    sub_info_button_link = db.Column(db.String(255), nullable=True)
+    announce_text = db.Column(db.Text, nullable=True)
+    fallback_url = db.Column(db.String(255), nullable=True)
+    profile_web_page_url = db.Column(db.String(255), nullable=True)
+    support_url = db.Column(db.String(255), nullable=True)
+    
+    # Happ custom routing (JSON for custom-tunnel-config)
+    happ_routing_enabled = db.Column(db.Boolean, default=False)
+    happ_routing_config = db.Column(db.Text, nullable=True)
+    
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     @classmethod
@@ -215,6 +229,16 @@ class GlobalSettings(db.Model):
             'custom_direct_countries': self.custom_direct_countries,
             'auto_sync_enabled': self.auto_sync_enabled,
             'auto_sync_interval_minutes': self.auto_sync_interval_minutes,
+            'sub_expire_enabled': self.sub_expire_enabled,
+            'sub_expire_button_link': self.sub_expire_button_link,
+            'sub_info_button_text': self.sub_info_button_text,
+            'sub_info_button_link': self.sub_info_button_link,
+            'announce_text': self.announce_text,
+            'fallback_url': self.fallback_url,
+            'profile_web_page_url': self.profile_web_page_url,
+            'support_url': self.support_url,
+            'happ_routing_enabled': self.happ_routing_enabled,
+            'happ_routing_config': self.happ_routing_config,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 

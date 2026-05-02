@@ -690,8 +690,12 @@ def subscription_link(token):
         'subscription-userinfo': sub_info,
         'profile-update-interval': '1',
     }
-    if gsettings.sub_description:
-        headers['profile-description'] = gsettings.sub_description[:200]
+    
+    # Build description comment for non-clash clients (Happ, etc.)
+    # HTTP headers must be latin-1; description goes into subscription body as comment
+    description_comment = ''
+    if gsettings.sub_description and not is_clash:
+        description_comment = f"#desc: {gsettings.sub_description[:200]}\n"
     
     # Return based on format
     if is_clash:
@@ -732,7 +736,8 @@ def subscription_link(token):
         return yaml_text, 200, headers
     else:
         # Base64-encoded URI list (standard for v2rayN/Shadowrocket/happ)
-        uri_text = '\n'.join(all_uris)
+        # Prepend description comment for happ client metadata
+        uri_text = description_comment + '\n'.join(all_uris)
         encoded = base64.b64encode(uri_text.encode()).decode()
         return encoded, 200, headers
 

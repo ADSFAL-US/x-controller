@@ -696,7 +696,9 @@ def subscription_link(token):
         'profile-update-interval': '1',
     }
     if gsettings.sub_description:
-        headers['profile-description'] = _utf8_header(gsettings.sub_description[:200])
+        # Happ uses sub-info-text for subscription description block
+        headers['sub-info-text'] = _utf8_header(gsettings.sub_description[:200])
+        headers['sub-info-color'] = 'blue'
     
     # Return based on format
     if is_clash:

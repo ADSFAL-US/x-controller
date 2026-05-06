@@ -253,7 +253,9 @@ class SyncService:
                         elif network == 'tcp':
                             client_data['flow'] = 'xtls-rprx-vision'
                     
-                    if is_reality and action in ('create', 'update'):
+                    # Only assign shortId from pool for NEW clients (create action)
+                    # For updates, we will preserve existing shortId from the panel
+                    if is_reality and action == 'create':
                         # Get available shortId from panel's pool
                         short_id = _get_available_short_id(inbound)
                         if short_id:

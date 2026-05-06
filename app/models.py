@@ -150,8 +150,8 @@ class Subscription(db.Model):
         # Если uuid пустой или None, генерируем новый
         client_id = (self.uuid and self.uuid.strip()) or str(uuid_lib.uuid4())
         
-        # subId должен быть одинаковым во всех inbound'ах
-        sub_id = (self.sub_id and self.sub_id.strip()) or client_id
+        # subId всегда равен client_id (UUID) - не используем глобальный sub_id
+        sub_id = client_id
         
         # Calculate expiry timestamp (milliseconds)
         # Use absolute expire_at if set, otherwise calculate from creation

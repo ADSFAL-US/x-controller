@@ -357,32 +357,8 @@ class SyncService:
                 db.session.commit()
                 ss_password_generated = False  # Reset to avoid duplicate saves
             
-            # After successful create/update, fetch subId from panel for subscription link
-            if panel_success and action in ('create', 'update'):
-                try:
-                    fresh_inbounds = panel.get_inbounds()
-                    for inbound in fresh_inbounds:
-                        settings_str = inbound.get('settings', '{}')
-                        try:
-                            settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
-                            clients = settings.get('clients', [])
-                            for client in clients:
-                                # For shadowsocks, match by password; otherwise by id
-                                protocol = inbound.get('protocol', 'vless').lower()
-                                if protocol == 'shadowsocks':
-                                    match = client.get('password') == subscription.ss_password
-                                else:
-                                    match = client.get('id') == subscription.uuid
-                                if match:
-                                    sub_id = client.get('subId')
-                                    if sub_id and sub_id != subscription.sub_id:
-                                        subscription.sub_id = sub_id
-                                        logger.info(f"Updated sub_id for {subscription.email}: {sub_id}")
-                                    break
-                        except Exception as e:
-                            logger.exception(f"Failed to create subscription on panel {panel.config.name}: {e}")
-                except Exception as e:
-                    logger.exception(f"Failed to create subscription on panel {panel.config.name}: {e}")
+            # Don't save panel-specific subId - each panel generates its own
+            # subId lookup is done dynamically in /sub/<token> route
             
             results[panel.config.name] = {
                 'success': panel_success, 
@@ -441,7 +417,8 @@ class SyncService:
         logger.info("Starting consistency check...")
         
         # Get all active subscriptions from DB
-        db_subs = {sub.email: sub for sub in Subscription.query.filter_by(enabled=True).all()}
+        db_subs_by_uuid = {sub.uuid: sub for sub in Subscription.query.filter_by(enabled=True).all() if sub.uuid}
+        db_subs_by_password = {sub.ss_password: sub for sub in Subscription.query.filter_by(enabled=True).all() if sub.ss_password}
         
         for panel in self.xui_client.panels:
             if not panel.login():
@@ -451,20 +428,22 @@ class SyncService:
             inbounds = panel.get_inbounds()
             for inbound in inbounds:
                 inbound_id = inbound.get('id')
+                protocol = inbound.get('protocol', 'vless').lower()
                 
                 # Get clients from panel
                 clients = inbound.get('settings', {}).get('clients', [])
                 
                 for client in clients:
-                    email = client.get('email')
-                    if not email:
-                        continue
-                    
-                    db_sub = db_subs.get(email)
+                    # Find matching DB subscription by UUID or password
+                    db_sub = None
+                    if protocol == 'shadowsocks':
+                        db_sub = db_subs_by_password.get(client.get('password'))
+                    else:
+                        db_sub = db_subs_by_uuid.get(client.get('id'))
                     
                     if not db_sub:
                         # Client exists on panel but not in DB - delete it
-                        logger.warning(f"Orphan client found: {email} on {panel.config.name}")
+                        logger.warning(f"Orphan client found: {client.get('email')} on {panel.config.name}")
                         client_id = client.get('id')
                         panel.delete_client(inbound_id, client_id)
                         continue
@@ -483,7 +462,7 @@ class SyncService:
                         needs_update = True
                     
                     if needs_update:
-                        logger.info(f"Drift detected for {email} on {panel.config.name}, repairing...")
+                        logger.info(f"Drift detected for {db_sub.email} on {panel.config.name}, repairing...")
                         panel.update_client(inbound_id, expected['id'], expected)
         
         logger.info("Consistency check completed")

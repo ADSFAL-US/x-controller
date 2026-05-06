@@ -676,10 +676,17 @@ def delete_subscription_form(subscription_id):
     if not sub:
         return "Subscription not found", 404
     
-    # Запускаем синхронизацию удаления перед удалением из БД
-    sync_service.schedule_sync(sub, 'delete')
+    # Синхронизируем удаление с панелей СИНХРОННО
+    # чтобы убедиться, что клиенты удалены до удаления из БД
+    sync_result = sync_service.sync_subscription(sub, 'delete')
     
-    # Удаляем из БД
+    # Проверяем результат синхронизации
+    all_success = all(result.get('success', False) for result in sync_result.values())
+    if not all_success:
+        logger.warning(f"Failed to delete client from some panels: {sync_result}")
+        # Все равно удаляем из БД, но логируем проблему
+    
+    # Удаляем из БД после успешной синхронизации
     db.session.delete(sub)
     db.session.commit()
     
@@ -851,8 +858,14 @@ def delete_subscription_api(subscription_id):
     if not sub:
         return jsonify({'error': 'Subscription not found'}), 404
     
-    # Синхронизируем удаление
-    sync_service.schedule_sync(sub, 'delete')
+    # Синхронизируем удаление с панелей СИНХРОННО
+    sync_result = sync_service.sync_subscription(sub, 'delete')
+    
+    # Проверяем результат синхронизации
+    all_success = all(result.get('success', False) for result in sync_result.values())
+    if not all_success:
+        logger.warning(f"Failed to delete client from some panels: {sync_result}")
+        # Все равно удаляем из БД, но логируем проблему
     
     email = sub.email
     db.session.delete(sub)
@@ -1080,7 +1093,15 @@ def subscription_link(token):
                         settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
                         clients = settings.get('clients', [])
                         for client in clients:
-                            if client.get('id') == sub.uuid:
+                            # Match by appropriate field based on protocol
+                            protocol = inbound.get('protocol', 'vless').lower()
+                            match = False
+                            if protocol == 'shadowsocks':
+                                match = client.get('password') == sub.ss_password
+                            else:
+                                match = client.get('id') == sub.uuid
+                            
+                            if match:
                                 remark = f"{panel.config.name}-{sub.email}"
                                 protocol = inbound.get('protocol', 'vless')
                                 listen = inbound.get('listen', '0.0.0.0')

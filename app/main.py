@@ -1872,6 +1872,233 @@ def api_settings():
     return jsonify({'settings': settings.to_dict()})
 
 
+# ==================== Preset Management UI ====================
+
+@app.route('/presets')
+@require_auth
+def presets_ui():
+    """Web UI for managing subscription presets."""
+    presets = SubscriptionPreset.query.order_by(SubscriptionPreset.created_at.desc()).all()
+    
+    rows = ""
+    for p in presets:
+        status = "Active" if p.is_active else "Inactive"
+        rows += f"""
+        <tr>
+            <td>{p.id}</td>
+            <td>{p.name}</td>
+            <td>{p.description or '-'}</td>
+            <td>{p.include_patterns or '-'}</td>
+            <td>{p.exclude_patterns or '-'}</td>
+            <td>{status}</td>
+            <td>
+                <a href="/presets/{p.id}/edit" class="btn btn-small">Edit</a>
+                <form method="POST" action="/presets/{p.id}/delete" style="display:inline;" 
+                      onsubmit="return confirm('Delete preset {p.name}?')">
+                    <button type="submit" class="btn btn-small btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Presets - 3x-controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .nav { margin-bottom: 20px; }
+        .nav a { text-decoration: none; color: #007bff; margin-right: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        .btn { padding: 5px 10px; background: #007bff; color: white; text-decoration: none; 
+               border-radius: 3px; border: none; cursor: pointer; }
+        .btn-danger { background: #dc3545; }
+        .btn-small { font-size: 12px; }
+        .new-btn { margin-bottom: 20px; display: inline-block; }
+    </style>
+    </head>
+    <body>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/subscriptions">Subscriptions</a>
+            <a href="/presets">Presets</a>
+            <a href="/settings">Settings</a>
+            <a href="/logout" style="float:right;">Logout</a>
+        </div>
+        <h1>Subscription Presets</h1>
+        <a href="/presets/new" class="btn new-btn">Create New Preset</a>
+        <table>
+            <tr>
+                <th>ID</th><th>Name</th><th>Description</th><th>Include</th><th>Exclude</th><th>Status</th><th>Actions</th>
+            </tr>
+            {{ rows|safe }}
+        </table>
+    </body>
+    </html>
+    """, rows=rows)
+
+
+@app.route('/presets/new', methods=['GET', 'POST'])
+@require_auth
+def new_preset():
+    """Create new preset UI."""
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        description = request.form.get('description', '').strip()
+        include_patterns = request.form.get('include_patterns', '').strip()
+        exclude_patterns = request.form.get('exclude_patterns', '').strip()
+        is_active = request.form.get('is_active') == 'on'
+        
+        if not name:
+            return "Name is required", 400
+        
+        preset = SubscriptionPreset(
+            name=name,
+            description=description,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+            is_active=is_active
+        )
+        db.session.add(preset)
+        db.session.commit()
+        
+        logger.info(f"Created preset: {name}")
+        return redirect('/presets')
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>New Preset - 3x-controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; max-width: 600px; }
+        .form-group { margin: 15px 0; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        input, textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 20px; background: #28a745; color: white; border: none; 
+                 border-radius: 4px; cursor: pointer; }
+        .nav { margin-bottom: 20px; }
+        .nav a { text-decoration: none; color: #007bff; }
+        .help { font-size: 12px; color: #666; margin-top: 4px; }
+    </style>
+    </head>
+    <body>
+        <div class="nav"><a href="/presets">&larr; Back to Presets</a></div>
+        <h1>Create New Preset</h1>
+        <form method="POST">
+            <div class="form-group">
+                <label>Name *</label>
+                <input type="text" name="name" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" name="description">
+            </div>
+            <div class="form-group">
+                <label>Include Patterns (comma-separated)</label>
+                <input type="text" name="include_patterns">
+                <div class="help">e.g.: "stable,fast" - configs with these words in name will be included</div>
+            </div>
+            <div class="form-group">
+                <label>Exclude Patterns (comma-separated)</label>
+                <input type="text" name="exclude_patterns">
+                <div class="help">e.g.: "test,debug" - configs with these words will be excluded</div>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" name="is_active" checked> Active</label>
+            </div>
+            <button type="submit">Create Preset</button>
+        </form>
+    </body>
+    </html>
+    """)
+
+
+@app.route('/presets/<int:preset_id>/edit', methods=['GET', 'POST'])
+@require_auth
+def edit_preset(preset_id):
+    """Edit preset UI."""
+    preset = SubscriptionPreset.query.get_or_404(preset_id)
+    
+    if request.method == 'POST':
+        preset.name = request.form.get('name', '').strip()
+        preset.description = request.form.get('description', '').strip()
+        preset.include_patterns = request.form.get('include_patterns', '').strip()
+        preset.exclude_patterns = request.form.get('exclude_patterns', '').strip()
+        preset.is_active = request.form.get('is_active') == 'on'
+        
+        db.session.commit()
+        logger.info(f"Updated preset: {preset.name}")
+        return redirect('/presets')
+    
+    checked = 'checked' if preset.is_active else ''
+    return render_template_string(f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Edit Preset - 3x-controller</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; max-width: 600px; }}
+        .form-group {{ margin: 15px 0; }}
+        label {{ display: block; font-weight: bold; margin-bottom: 5px; }}
+        input, textarea {{ width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }}
+        button {{ padding: 10px 20px; background: #007bff; color: white; border: none; 
+                 border-radius: 4px; cursor: pointer; }}
+        .nav {{ margin-bottom: 20px; }}
+        .nav a {{ text-decoration: none; color: #007bff; }}
+        .help {{ font-size: 12px; color: #666; margin-top: 4px; }}
+    </style>
+    </head>
+    <body>
+        <div class="nav"><a href="/presets">&larr; Back to Presets</a></div>
+        <h1>Edit Preset</h1>
+        <form method="POST">
+            <div class="form-group">
+                <label>Name *</label>
+                <input type="text" name="name" value="{preset.name}" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" name="description" value="{preset.description or ''}">
+            </div>
+            <div class="form-group">
+                <label>Include Patterns</label>
+                <input type="text" name="include_patterns" value="{preset.include_patterns or ''}">
+                <div class="help">Comma-separated patterns to include configs by name</div>
+            </div>
+            <div class="form-group">
+                <label>Exclude Patterns</label>
+                <input type="text" name="exclude_patterns" value="{preset.exclude_patterns or ''}">
+                <div class="help">Comma-separated patterns to exclude configs by name</div>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" name="is_active" {checked}> Active</label>
+            </div>
+            <button type="submit">Update Preset</button>
+        </form>
+    </body>
+    </html>
+    """)
+
+
+@app.route('/presets/<int:preset_id>/delete', methods=['POST'])
+@require_auth
+def delete_preset_ui(preset_id):
+    """Delete preset UI action."""
+    preset = SubscriptionPreset.query.get_or_404(preset_id)
+    
+    # Check if preset is in use
+    if preset.subscriptions.count() > 0:
+        return "Cannot delete preset that is in use by subscriptions", 409
+    
+    name = preset.name
+    db.session.delete(preset)
+    db.session.commit()
+    
+    logger.info(f"Deleted preset: {name}")
+    return redirect('/presets')
+
+
 # ==================== Preset Management API ====================
 
 @app.route('/api/presets', methods=['GET'])

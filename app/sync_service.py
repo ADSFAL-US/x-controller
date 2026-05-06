@@ -334,7 +334,6 @@ class SyncService:
             
             # Save ss_password if it was generated
             if ss_password_generated:
-                from app.models import db
                 db.session.commit()
                 ss_password_generated = False  # Reset to avoid duplicate saves
             

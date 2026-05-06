@@ -611,17 +611,32 @@ class SyncService:
         for item in plan['create']:
             try:
                 sub = item['subscription']
-                base_data = sub.to_xui_client()
                 
                 for inbound in inbounds:
                     inbound_id = inbound.get('id')
-                    if inbound_id:
-                        # Generate unique random email per inbound
-                        client_data = base_data.copy()
-                        client_data['email'] = _generate_random_email()
-                        success = panel.add_client(inbound_id, client_data)
-                        status = "✓" if success else "✗"
-                        logger.info(f"  {status} CREATE {sub.email} in inbound {inbound_id}: {item['reason']}")
+                    if not inbound_id:
+                        continue
+                    
+                    # Determine protocol and generate appropriate data
+                    protocol = inbound.get('protocol', 'vless').lower()
+                    client_data = sub.to_xui_client(protocol=protocol)
+                    client_data['email'] = _generate_random_email()
+                    
+                    # For VLESS with Reality, assign shortId from pool
+                    if protocol == 'vless':
+                        stream_settings_str = inbound.get('streamSettings', '{}')
+                        try:
+                            stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
+                            if stream_settings.get('realitySettings'):
+                                short_id = _get_available_short_id(inbound)
+                                if short_id:
+                                    client_data['shortIds'] = [short_id]
+                        except Exception:
+                            pass
+                    
+                    success = panel.add_client(inbound_id, client_data)
+                    status = "✓" if success else "✗"
+                    logger.info(f"  {status} CREATE {sub.email} in inbound {inbound_id}: {item['reason']}")
                         
             except Exception:
                 logger.exception(f"Error creating {sub.email}")
@@ -640,18 +655,39 @@ class SyncService:
         for item in plan['update']:
             try:
                 sub = item['subscription']
-                base_data = sub.to_xui_client()
                 
-                # Find which inbound has this client by UUID
+                # Find which inbound has this client
                 for inbound in inbounds:
                     inbound_id = inbound.get('id')
+                    protocol = inbound.get('protocol', 'vless').lower()
                     settings_str = inbound.get('settings', '{}')
                     try:
                         settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
                         for client in settings.get('clients', []):
-                            if client.get('id') == sub.uuid:
+                            # Match by UUID (VLESS/VMess/Trojan) or password (Shadowsocks)
+                            match = False
+                            if protocol == 'shadowsocks':
+                                match = client.get('password') == sub.ss_password
+                            else:
+                                match = client.get('id') == sub.uuid
+                            
+                            if match:
                                 client_id = client.get('id')
-                                success = panel.update_client(inbound_id, client_id, base_data)
+                                
+                                # Generate client data for this protocol
+                                client_data = sub.to_xui_client(protocol=protocol)
+                                client_data['email'] = client.get('email', _generate_random_email())
+                                
+                                # IMPORTANT: Preserve existing shortId for VLESS Reality
+                                if protocol == 'vless':
+                                    existing_short_ids = client.get('shortIds', [])
+                                    if existing_short_ids:
+                                        if isinstance(existing_short_ids, str):
+                                            existing_short_ids = [existing_short_ids]
+                                        client_data['shortIds'] = existing_short_ids
+                                        logger.debug(f"Force sync: Preserved shortIds {existing_short_ids} for {sub.email}")
+                                
+                                success = panel.update_client(inbound_id, client_id, client_data)
                                 status = "✓" if success else "✗"
                                 logger.info(f"  {status} UPDATE {sub.email}: {item['reason']}")
                                 break

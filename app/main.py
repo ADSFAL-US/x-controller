@@ -95,6 +95,16 @@ with app.app_context():
                 except OperationalError as e:
                     logger.warning(f"Migration: ss_password column may already exist: {e}")
                     db.session.rollback()
+            
+            # Migration: Add expire_at for absolute expiration timestamp
+            if 'expire_at' not in existing_columns:
+                try:
+                    db.session.execute(text("ALTER TABLE subscriptions ADD COLUMN expire_at TIMESTAMP"))
+                    db.session.commit()
+                    logger.info("Migration: added expire_at column to subscriptions")
+                except OperationalError as e:
+                    logger.warning(f"Migration: expire_at column may already exist: {e}")
+                    db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
         logger.info("Database tables likely created by another worker")
@@ -414,6 +424,11 @@ def create_subscription_form():
             return f"Subscription with email {email} already exists", 409
         
         # Создаем подписку
+        from datetime import timedelta
+        expire_at = None
+        if expiry_days > 0:
+            expire_at = datetime.utcnow() + timedelta(days=expiry_days)
+        
         sub = Subscription(
             email=email,
             uuid=uuid,
@@ -421,6 +436,7 @@ def create_subscription_form():
             preset_id=preset_id,
             total_gb=total_gb,
             expiry_days=expiry_days,
+            expire_at=expire_at,
             enabled=enabled,
             flow=flow,
             sync_status='pending'
@@ -531,7 +547,17 @@ def edit_subscription(subscription_id):
         
         sub.uuid = request.form.get('uuid') or sub.uuid
         sub.total_gb = float(request.form.get('total_gb', sub.total_gb))
-        sub.expiry_days = int(request.form.get('expiry_days', sub.expiry_days))
+        
+        # Update expiry and recalculate absolute timestamp
+        new_expiry_days = int(request.form.get('expiry_days', sub.expiry_days))
+        if new_expiry_days != sub.expiry_days:
+            sub.expiry_days = new_expiry_days
+            if new_expiry_days > 0:
+                from datetime import timedelta
+                sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
+            else:
+                sub.expire_at = None
+        
         sub.enabled = request.form.get('enabled') == 'on'
         sub.flow = request.form.get('flow', sub.flow)
         
@@ -697,13 +723,21 @@ def create_subscription_api():
         except (ValueError, TypeError):
             preset_id = None
     
+    # Calculate absolute expiration timestamp
+    expiry_days = int(data.get('expiry_days', 0))
+    expire_at = None
+    if expiry_days > 0:
+        from datetime import timedelta
+        expire_at = datetime.utcnow() + timedelta(days=expiry_days)
+    
     sub = Subscription(
         email=email,
         uuid=uuid_val if uuid_val else str(uuid_lib.uuid4()),
         sub_token=secrets.token_urlsafe(16),
         preset_id=preset_id,
         total_gb=float(data.get('total_gb', 0)),
-        expiry_days=int(data.get('expiry_days', 0)),
+        expiry_days=expiry_days,
+        expire_at=expire_at,
         enabled=data.get('enabled', True),
         flow=data.get('flow', 'xtls-rprx-vision'),
         sync_status='pending'
@@ -873,26 +907,31 @@ def subscription_link(token):
             panel.login()
             client_sub_id = None
             
-            # Use saved sub_id if available
-            if sub.sub_id:
-                client_sub_id = sub.sub_id
-                logger.debug(f"Panel {panel.config.name}: using saved sub_id={client_sub_id}")
-            else:
-                # Find client sub_id on this panel by UUID
-                inbounds = panel.get_inbounds()
-                for inbound in inbounds:
-                    settings_str = inbound.get('settings', '{}')
-                    try:
-                        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
-                        clients = settings.get('clients', [])
-                        for client in clients:
-                            if client.get('id') == sub.uuid:
-                                client_sub_id = client.get('subId') or client.get('id')
-                                break
-                        if client_sub_id:
+            # ALWAYS find client on THIS panel by UUID (or password for Shadowsocks)
+            # Each panel generates its own subId - cannot use global sub_id
+            inbounds = panel.get_inbounds()
+            for inbound in inbounds:
+                settings_str = inbound.get('settings', '{}')
+                protocol = inbound.get('protocol', 'vless').lower()
+                try:
+                    settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                    clients = settings.get('clients', [])
+                    for client in clients:
+                        # Match by appropriate field based on protocol
+                        match = False
+                        if protocol == 'shadowsocks':
+                            match = client.get('password') == sub.ss_password
+                        else:
+                            match = client.get('id') == sub.uuid
+                        
+                        if match:
+                            client_sub_id = client.get('subId') or client.get('id')
+                            logger.debug(f"Panel {panel.config.name}: found client with subId={client_sub_id}")
                             break
-                    except Exception:
-                        continue
+                    if client_sub_id:
+                        break
+                except Exception:
+                    continue
             
             if client_sub_id:
                 # Get ready subscription from panel using sub_id

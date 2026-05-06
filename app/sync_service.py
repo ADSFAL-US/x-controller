@@ -6,6 +6,7 @@ import random
 import string
 from datetime import datetime
 from typing import Dict, Optional
+import threading
 from threading import Thread
 import time
 
@@ -74,8 +75,12 @@ class SyncService:
         self.auto_sync_interval = auto_sync_interval  # seconds between auto-sync checks (5 min default)
         self._last_sync_time = 0
         self._pending_syncs = {}  # subscription_id -> (subscription, action, defer_count)
-        self._sync_lock = False
         self._max_defers = 10  # max times to defer before forcing sync
+        
+        # Thread safety: proper lock instead of bool flag
+        self._lock = threading.Lock()
+        self._sync_in_progress = False
+        self._timer = None  # Single timer for delayed sync
         
         # Drift detection state
         self._last_auto_sync = 0
@@ -93,90 +98,95 @@ class SyncService:
         
         sub_id = subscription.id
         
-        # Store/update the pending sync
-        if sub_id in self._pending_syncs:
+        with self._lock:
+            # Store/update the pending sync
+            if sub_id in self._pending_syncs:
+                _, _, defer_count = self._pending_syncs[sub_id]
+                self._pending_syncs[sub_id] = (subscription, action, defer_count + 1)
+                logger.debug(f"Updated pending sync for {subscription.email} (defer #{defer_count + 1})")
+            else:
+                self._pending_syncs[sub_id] = (subscription, action, 0)
+                logger.debug(f"Scheduled sync for {subscription.email}")
+            
+            # Check if we should sync now
+            current_time = time.time()
+            time_since_last = current_time - self._last_sync_time
+            
+            # Get defer count
             _, _, defer_count = self._pending_syncs[sub_id]
-            self._pending_syncs[sub_id] = (subscription, action, defer_count + 1)
-            logger.debug(f"Updated pending sync for {subscription.email} (defer #{defer_count + 1})")
-        else:
-            self._pending_syncs[sub_id] = (subscription, action, 0)
-            logger.debug(f"Scheduled sync for {subscription.email}")
-        
-        # Check if we should sync now
-        current_time = time.time()
-        time_since_last = current_time - self._last_sync_time
-        
-        # Get defer count
-        _, _, defer_count = self._pending_syncs[sub_id]
-        
-        # Sync if: enough time passed OR max defers reached
-        if time_since_last >= self.min_sync_interval or defer_count >= self._max_defers:
-            if self._sync_lock:
-                logger.warning("Sync already in progress, deferring...")
-                return
             
-            self._execute_pending_syncs()
-        else:
-            # Need to wait, schedule delayed execution
-            wait_time = self.min_sync_interval - time_since_last
-            logger.info(f"Rate limiting: waiting {wait_time:.1f}s before sync (defer #{defer_count})")
-            
-            # Start delayed sync thread
-            delayed_thread = Thread(
-                target=self._delayed_sync,
-                args=(wait_time,),
-                daemon=True
-            )
-            delayed_thread.start()
+            # Sync if: enough time passed OR max defers reached
+            if time_since_last >= self.min_sync_interval or defer_count >= self._max_defers:
+                if self._sync_in_progress:
+                    logger.warning("Sync already in progress, deferring...")
+                    return
+                
+                # Cancel any existing timer since we're syncing now
+                if self._timer:
+                    self._timer.cancel()
+                    self._timer = None
+                
+                self._sync_in_progress = True
+                
+                # Execute sync in a separate thread to not block
+                sync_thread = Thread(target=self._execute_pending_syncs_safe, daemon=True)
+                sync_thread.start()
+            else:
+                # Need to wait, schedule delayed execution
+                wait_time = self.min_sync_interval - time_since_last
+                logger.info(f"Rate limiting: waiting {wait_time:.1f}s before sync (defer #{defer_count})")
+                
+                # Cancel existing timer and create new one
+                if self._timer:
+                    self._timer.cancel()
+                
+                self._timer = threading.Timer(wait_time, self._execute_pending_syncs_safe)
+                self._timer.daemon = True
+                self._timer.start()
     
-    def _delayed_sync(self, delay: float):
-        """Execute sync after delay."""
-        import time
-        time.sleep(delay)
-        self._execute_pending_syncs()
+    def _execute_pending_syncs_safe(self):
+        """Thread-safe wrapper for executing pending syncs."""
+        try:
+            self._execute_pending_syncs()
+        finally:
+            with self._lock:
+                self._sync_in_progress = False
+                self._timer = None
     
     def _execute_pending_syncs(self):
         """Execute all pending syncs."""
         import time
         
-        if self._sync_lock:
-            return
-        
-        self._sync_lock = True
-        self._last_sync_time = time.time()
-        
-        try:
-            # Copy and clear pending syncs
+        # Copy and clear pending syncs under lock
+        with self._lock:
+            self._last_sync_time = time.time()
             pending = dict(self._pending_syncs)
             self._pending_syncs.clear()
-            
-            if not pending:
-                return
-            
-            logger.info(f"Executing {len(pending)} pending syncs")
-            
-            # Group by action and sort: create (1), delete (2), update (3)
-            by_action = {'create': [], 'delete': [], 'update': []}
-            for sub_id, (sub, action, _) in pending.items():
-                by_action[action].append((sub_id, sub))
-            
-            # Execute syncs in order: CREATE -> DELETE -> UPDATE
-            action_order = ['create', 'delete', 'update']
-            for action in action_order:
-                items = by_action[action]
-                if items:
-                    logger.info(f"Executing {len(items)} {action} operations")
-                for sub_id, sub in items:
-                    try:
-                        # Refresh subscription from DB (might have changed)
-                        fresh_sub = Subscription.query.get(sub_id)
-                        if fresh_sub:
-                            self.sync_subscription(fresh_sub, action)
-                    except Exception:
-                        logger.exception(f"Error syncing {sub.email}")
-                        
-        finally:
-            self._sync_lock = False
+        
+        if not pending:
+            return
+        
+        logger.info(f"Executing {len(pending)} pending syncs")
+        
+        # Group by action and sort: create (1), delete (2), update (3)
+        by_action = {'create': [], 'delete': [], 'update': []}
+        for sub_id, (sub, action, _) in pending.items():
+            by_action[action].append((sub_id, sub))
+        
+        # Execute syncs in order: CREATE -> DELETE -> UPDATE
+        action_order = ['create', 'delete', 'update']
+        for action in action_order:
+            items = by_action[action]
+            if items:
+                logger.info(f"Executing {len(items)} {action} operations")
+            for sub_id, sub in items:
+                try:
+                    # Refresh subscription from DB (might have changed)
+                    fresh_sub = Subscription.query.get(sub_id)
+                    if fresh_sub:
+                        self.sync_subscription(fresh_sub, action)
+                except Exception:
+                    logger.exception(f"Error syncing {sub.email}")
     
     def sync_subscription(self, subscription: Subscription, action: str = 'create') -> Dict:
         """

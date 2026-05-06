@@ -79,6 +79,7 @@ class Subscription(db.Model):
     # Traffic and expiry (GB and days)
     total_gb = db.Column(db.Float, default=0)  # 0 = unlimited, stored in GB for UI
     expiry_days = db.Column(db.Integer, default=0)  # 0 = never expires
+    expire_at = db.Column(db.DateTime, nullable=True)  # Absolute expiration timestamp
     
     # Status
     enabled = db.Column(db.Boolean, default=True)
@@ -153,11 +154,18 @@ class Subscription(db.Model):
         sub_id = (self.sub_id and self.sub_id.strip()) or client_id
         
         # Calculate expiry timestamp (milliseconds)
+        # Use absolute expire_at if set, otherwise calculate from creation
         expiry_time = 0
         if self.expiry_days > 0:
             from datetime import timedelta
-            expiry_date = datetime.utcnow() + timedelta(days=self.expiry_days)
-            expiry_time = int(expiry_date.timestamp() * 1000)
+            if self.expire_at:
+                # Use stored absolute expiration time
+                expiry_time = int(self.expire_at.timestamp() * 1000)
+            else:
+                # Fallback: calculate from created_at to avoid extending on every sync
+                base_time = self.created_at or datetime.utcnow()
+                expiry_date = base_time + timedelta(days=self.expiry_days)
+                expiry_time = int(expiry_date.timestamp() * 1000)
         
         # totalGB передаётся в байтах: GB * 1024^3
         total_bytes = int(self.total_gb * 1024 * 1024 * 1024) if self.total_gb else 0

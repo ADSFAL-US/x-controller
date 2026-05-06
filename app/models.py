@@ -6,6 +6,61 @@ from flask_sqlalchemy import SQLAlchemy
 db = SQLAlchemy()
 
 
+class SubscriptionPreset(db.Model):
+    """Subscription preset - filters configs by name patterns."""
+    
+    __tablename__ = 'subscription_presets'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # Preset identification
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    
+    # Filter rules (comma-separated patterns)
+    include_patterns = db.Column(db.Text, nullable=True)  # Config names must contain these
+    exclude_patterns = db.Column(db.Text, nullable=True)  # Config names must NOT contain these
+    
+    # Metadata
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    subscriptions = db.relationship('Subscription', backref='preset', lazy='dynamic')
+    
+    def to_dict(self):
+        """Convert to dictionary for API responses."""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'include_patterns': self.include_patterns,
+            'exclude_patterns': self.exclude_patterns,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+    
+    def matches_config(self, config_name: str) -> bool:
+        """Check if a config name matches this preset's filters."""
+        config_name_lower = config_name.lower()
+        
+        # Check include patterns (all must match at least one)
+        if self.include_patterns:
+            includes = [p.strip().lower() for p in self.include_patterns.split(',') if p.strip()]
+            if includes and not any(p in config_name_lower for p in includes):
+                return False
+        
+        # Check exclude patterns (none must match)
+        if self.exclude_patterns:
+            excludes = [p.strip().lower() for p in self.exclude_patterns.split(',') if p.strip()]
+            if any(p in config_name_lower for p in excludes):
+                return False
+        
+        return True
+
+
 class Subscription(db.Model):
     """Subscription model - source of truth for users across all panels."""
     
@@ -17,6 +72,9 @@ class Subscription(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     uuid = db.Column(db.String(36), unique=True, nullable=True)
     sub_token = db.Column(db.String(64), unique=True, nullable=True, index=True)  # token for subscription link
+    
+    # Preset for filtering configs
+    preset_id = db.Column(db.Integer, db.ForeignKey('subscription_presets.id'), nullable=True)
     
     # Traffic and expiry (GB and days)
     total_gb = db.Column(db.Float, default=0)  # 0 = unlimited, stored in GB for UI
@@ -30,6 +88,9 @@ class Subscription(db.Model):
     sub_id = db.Column(db.String(36), unique=True, nullable=True)  # subId - unique per user, same across all inbounds
     limit_ip = db.Column(db.Integer, default=0)  # limitIp - max concurrent IPs (0 = unlimited)
     tg_id = db.Column(db.String(50), nullable=True)  # tgId - Telegram ID for notifications
+    
+    # Shadowsocks 2022 specific field
+    ss_password = db.Column(db.String(64), nullable=True)  # Password for Shadowsocks 2022
     
     # Sync status
     sync_status = db.Column(db.String(20), default='pending')  # pending, synced, failed
@@ -57,12 +118,14 @@ class Subscription(db.Model):
             'uuid': self.uuid,
             'sub_token': self.sub_token,
             'sub_id': self.sub_id,
+            'preset_id': self.preset_id,
             'total_gb': self.total_gb,
             'expiry_days': self.expiry_days,
             'enabled': self.enabled,
             'flow': self.flow,
             'limit_ip': self.limit_ip,
             'tg_id': self.tg_id,
+            'ss_password': self.ss_password,
             'sync_status': self.sync_status,
             'last_sync_at': self.last_sync_at.isoformat() if self.last_sync_at else None,
             'sync_error': self.sync_error,
@@ -72,8 +135,15 @@ class Subscription(db.Model):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
     
-    def to_xui_client(self):
-        """Convert to 3x-ui client format."""
+    def to_xui_client(self, protocol='vless'):
+        """Convert to 3x-ui client format for specific protocol.
+        
+        Args:
+            protocol: Protocol type (vless, vmess, shadowsocks, trojan)
+        
+        Returns:
+            Dict with client data appropriate for the protocol
+        """
         import uuid as uuid_lib
         
         # Если uuid пустой или None, генерируем новый
@@ -92,8 +162,8 @@ class Subscription(db.Model):
         # totalGB передаётся в байтах: GB * 1024^3
         total_bytes = int(self.total_gb * 1024 * 1024 * 1024) if self.total_gb else 0
         
+        # Base fields common to all protocols
         result = {
-            'id': client_id,
             'email': self.email,
             'subId': sub_id,
             'limitIp': self.limit_ip if self.limit_ip else 0,
@@ -102,9 +172,31 @@ class Subscription(db.Model):
             'enable': self.enabled,
         }
         
-        if self.tg_id:
-            result['tgId'] = self.tg_id
-        # flow is determined per-inbound in sync_service based on transport type
+        # Protocol-specific fields
+        protocol = protocol.lower()
+        
+        if protocol in ('vless', 'vmess', 'trojan'):
+            # These protocols use UUID as client ID
+            result['id'] = client_id
+            if self.tg_id:
+                result['tgId'] = self.tg_id
+            # flow is determined per-inbound in sync_service based on transport type
+            
+        elif protocol == 'shadowsocks':
+            # Shadowsocks 2022 uses password instead of UUID
+            # Generate password if not set (32 byte hex for 2022-blake3-aes-256-gcm)
+            if not self.ss_password:
+                self.ss_password = uuid_lib.uuid4().hex + uuid_lib.uuid4().hex  # 64 hex chars = 32 bytes
+                # Note: caller should save this to DB
+            result['password'] = self.ss_password
+            # Shadowsocks doesn't use id, subId, or tgId in the same way
+            # But we keep subId for subscription link generation
+            
+        else:
+            # Default fallback
+            result['id'] = client_id
+            if self.tg_id:
+                result['tgId'] = self.tg_id
             
         return result
     
@@ -136,6 +228,7 @@ class Subscription(db.Model):
             flow=client_data.get('flow', ''),
             limit_ip=client_data.get('limitIp', 0),
             tg_id=client_data.get('tgId'),
+            ss_password=client_data.get('password'),  # Shadowsocks password
             sync_status='synced'
         )
 

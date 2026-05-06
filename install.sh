@@ -79,6 +79,18 @@ install_new() {
     read -p "Enter port for controller [8080]: " user_port
     CONTROLLER_PORT=${user_port:-8080}
     
+    # Запрашиваем логин и пароль администратора
+    read -p "Enter admin username [admin]: " admin_user
+    ADMIN_USERNAME=${admin_user:-admin}
+    
+    read -s -p "Enter admin password (will be hidden): " admin_pass
+    echo
+    if [ -z "$admin_pass" ]; then
+        admin_pass=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+        log_warning "Password not provided, generated random: $admin_pass"
+        echo "Please save this password!"
+    fi
+    
     # Проверяем что порт свободен
     if netstat -tuln 2>/dev/null | grep -q ":$CONTROLLER_PORT " || ss -tuln 2>/dev/null | grep -q ":$CONTROLLER_PORT "; then
         log_warning "Порт $CONTROLLER_PORT уже занят!"
@@ -91,8 +103,10 @@ install_new() {
         cat > "$INSTALL_DIR/.env" << EOF
 CONTROLLER_PORT=$CONTROLLER_PORT
 SECRET_KEY=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p | head -c 64)
+ADMIN_USERNAME=$ADMIN_USERNAME
+ADMIN_PASSWORD=$admin_pass
 EOF
-        log_success ".env создан (port: $CONTROLLER_PORT)"
+        log_success ".env создан (port: $CONTROLLER_PORT, user: $ADMIN_USERNAME)"
     else
         # Обновляем только порт если файл существует
         sed -i "s/^CONTROLLER_PORT=.*/CONTROLLER_PORT=$CONTROLLER_PORT/" "$INSTALL_DIR/.env" 2>/dev/null || \

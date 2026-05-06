@@ -1,6 +1,7 @@
 """Flask application for 3x-controller."""
 
 import base64
+import functools
 import json
 import logging
 import os
@@ -9,10 +10,10 @@ import urllib.parse
 import uuid as uuid_lib
 from datetime import datetime
 from typing import List
-from flask import Flask, jsonify, request, render_template_string, redirect, url_for
+from flask import Flask, jsonify, request, render_template_string, redirect, url_for, session
 
 from app.xui_client import XUIClient
-from app.models import db, Subscription, SyncLog, GlobalSettings
+from app.models import db, Subscription, SyncLog, GlobalSettings, SubscriptionPreset
 from app.sync_service import SyncService
 
 # Настройка логирования
@@ -72,6 +73,28 @@ with app.app_context():
                     except OperationalError as e:
                         logger.warning(f"Migration: column {col_name} may already exist: {e}")
                         db.session.rollback()
+        
+        # Migration: Add preset_id to subscriptions table if it exists
+        if 'subscriptions' in existing_tables:
+            existing_columns = {col['name'] for col in inspector.get_columns('subscriptions')}
+            if 'preset_id' not in existing_columns:
+                try:
+                    db.session.execute(text("ALTER TABLE subscriptions ADD COLUMN preset_id INTEGER"))
+                    db.session.commit()
+                    logger.info("Migration: added preset_id column to subscriptions")
+                except OperationalError as e:
+                    logger.warning(f"Migration: preset_id column may already exist: {e}")
+                    db.session.rollback()
+            
+            # Migration: Add ss_password for Shadowsocks 2022 support
+            if 'ss_password' not in existing_columns:
+                try:
+                    db.session.execute(text("ALTER TABLE subscriptions ADD COLUMN ss_password VARCHAR(64)"))
+                    db.session.commit()
+                    logger.info("Migration: added ss_password column to subscriptions")
+                except OperationalError as e:
+                    logger.warning(f"Migration: ss_password column may already exist: {e}")
+                    db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
         logger.info("Database tables likely created by another worker")
@@ -83,7 +106,104 @@ xui_client = XUIClient("config/panels.yaml")
 sync_service = SyncService(xui_client)
 
 
+# ==================== Authentication ====================
+
+def check_auth(username, password):
+    """Check if username/password combination is valid."""
+    expected_user = os.environ.get('ADMIN_USERNAME', 'admin')
+    expected_pass = os.environ.get('ADMIN_PASSWORD', 'admin')
+    return username == expected_user and password == expected_pass
+
+
+def require_auth(f):
+    """Decorator to require authentication for a route."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('authenticated'):
+            if request.is_json or request.path.startswith('/api/'):
+                # API request - check for Basic Auth
+                auth = request.headers.get('Authorization', '')
+                if auth.startswith('Basic '):
+                    import base64
+                    try:
+                        decoded = base64.b64decode(auth[6:]).decode('utf-8')
+                        username, password = decoded.split(':', 1)
+                        if check_auth(username, password):
+                            return f(*args, **kwargs)
+                    except Exception:
+                        pass
+                return jsonify({'error': 'Authentication required'}), 401
+            else:
+                # Web request - redirect to login
+                return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login page for web UI."""
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        if check_auth(username, password):
+            session['authenticated'] = True
+            next_url = request.args.get('next') or url_for('index')
+            return redirect(next_url)
+        else:
+            error = 'Invalid username or password'
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Login - 3x-controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-box { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 300px; }
+        h1 { margin: 0 0 20px 0; color: #333; text-align: center; }
+        .form-group { margin: 15px 0; }
+        label { display: block; margin-bottom: 5px; color: #666; }
+        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #0056b3; }
+        .error { color: #dc3545; margin-top: 10px; text-align: center; }
+    </style>
+    </head>
+    <body>
+        <div class="login-box">
+            <h1>3x-controller</h1>
+            <form method="POST">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" name="username" required autofocus>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="password" required>
+                </div>
+                <button type="submit">Login</button>
+                {% if error %}
+                <div class="error">{{ error }}</div>
+                {% endif %}
+            </form>
+        </div>
+    </body>
+    </html>
+    """, error=error)
+
+
+@app.route('/logout')
+def logout():
+    """Logout and clear session."""
+    session.pop('authenticated', None)
+    return redirect(url_for('login'))
+
+
+# ==================== Web UI Routes (Protected) ====================
+
 @app.route('/')
+@require_auth
 def index():
     """Главная страница - дашборд."""
     with app.app_context():
@@ -126,8 +246,10 @@ def index():
         <div class="nav">
             <a href="/subscriptions">Subscriptions</a>
             <a href="/subscriptions/new">Create Subscription</a>
+            <a href="/presets">Presets</a>
             <a href="/settings">Settings</a>
             <a href="/api/health">API Health</a>
+            <a href="/logout" style="float:right;">Logout</a>
         </div>
         <h2>Statistics</h2>
         <div class="stats">
@@ -144,6 +266,7 @@ def index():
 
 
 @app.route('/subscriptions')
+@require_auth
 def list_subscriptions():
     """Список всех подписок."""
     subs = Subscription.query.order_by(Subscription.created_at.desc()).all()
@@ -158,11 +281,19 @@ def list_subscriptions():
         
         sub_link = f'<a href="/sub/{sub.sub_token}" target="_blank" style="font-size:11px;">Sub</a>' if sub.sub_token else 'N/A'
         
+        # Get preset name if assigned
+        preset_name = '-'
+        if sub.preset_id:
+            preset = SubscriptionPreset.query.get(sub.preset_id)
+            if preset:
+                preset_name = preset.name
+        
         rows += f"""
         <tr>
             <td>{sub.id}</td>
             <td>{sub.email}</td>
             <td>{sub.uuid or 'Auto'}</td>
+            <td>{preset_name}</td>
             <td>{sub.total_gb} GB</td>
             <td>{sub.expiry_days} days</td>
             <td>{'Enabled' if sub.enabled else 'Disabled'}</td>
@@ -231,12 +362,14 @@ def list_subscriptions():
         <h1>Subscriptions</h1>
         <div class="nav">
             <a href="/">Dashboard</a>
+            <a href="/presets">Presets</a>
             <a href="/subscriptions/new" class="btn">Create New</a>
             <button onclick="syncAll()" class="btn btn-orange" style="padding: 10px 20px; border: none; cursor: pointer; border-radius: 4px;">Sync All</button>
+            <a href="/logout" style="float:right;">Logout</a>
         </div>
         <table>
             <tr>
-                <th>ID</th><th>Email</th><th>UUID</th><th>Traffic</th>
+                <th>ID</th><th>Email</th><th>UUID</th><th>Preset</th><th>Traffic</th>
                 <th>Expiry</th><th>Status</th><th>Sync</th><th>Sub</th><th>Actions</th>
             </tr>
             {rows}
@@ -247,6 +380,7 @@ def list_subscriptions():
 
 
 @app.route('/subscriptions/new', methods=['GET', 'POST'])
+@require_auth
 def create_subscription_form():
     """Форма создания подписки с ВСЕМИ полями 3x-ui."""
     if request.method == 'POST':
@@ -259,6 +393,17 @@ def create_subscription_form():
         expiry_days = int(request.form.get('expiry_days', settings.default_expiry_days or 0))
         enabled = request.form.get('enabled') == 'on'
         flow = request.form.get('flow', 'xtls-rprx-vision')
+        
+        # Preset selection
+        preset_id = request.form.get('preset_id')
+        if preset_id:
+            try:
+                preset_id = int(preset_id)
+                # Verify preset exists
+                if not SubscriptionPreset.query.get(preset_id):
+                    preset_id = None
+            except (ValueError, TypeError):
+                preset_id = None
         
         # Валидация
         if not email:
@@ -273,6 +418,7 @@ def create_subscription_form():
             email=email,
             uuid=uuid,
             sub_token=secrets.token_urlsafe(16),
+            preset_id=preset_id,
             total_gb=total_gb,
             expiry_days=expiry_days,
             enabled=enabled,
@@ -290,6 +436,14 @@ def create_subscription_form():
     
     # GET - показываем форму со всеми полями 3x-ui
     settings = GlobalSettings.get()
+    presets = SubscriptionPreset.query.filter_by(is_active=True).all()
+    
+    # Build preset options HTML
+    preset_options = '<option value="">-- No preset (all configs) --</option>'
+    for p in presets:
+        desc = f" - {p.description}" if p.description else ""
+        preset_options += f'<option value="{p.id}">{p.name}{desc}</option>'
+    
     return render_template_string("""
     <!DOCTYPE html>
     <html>
@@ -305,6 +459,7 @@ def create_subscription_form():
         .nav { margin-bottom: 20px; }
         .nav a { text-decoration: none; color: #007bff; }
         .defaults-info { font-size: 12px; color: #666; margin-top: 4px; }
+        .help { font-size: 12px; color: #666; margin-top: 4px; }
     </style>
     </head>
     <body>
@@ -318,6 +473,13 @@ def create_subscription_form():
             <div class="form-group">
                 <label>UUID (optional, auto-generated if empty)</label>
                 <input type="text" name="uuid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            </div>
+            <div class="form-group">
+                <label>Preset</label>
+                <select name="preset_id">
+                    {{ preset_options|safe }}
+                </select>
+                <div class="help">Filter which configs are included based on config name patterns. <a href="/presets">Manage presets</a></div>
             </div>
             <div class="form-group">
                 <label>Traffic Limit (GB, 0 = unlimited)</label>
@@ -346,10 +508,11 @@ def create_subscription_form():
         </form>
     </body>
     </html>
-    """, default_total_gb=settings.default_total_gb or 0, default_expiry_days=settings.default_expiry_days or 30)
+    """, default_total_gb=settings.default_total_gb or 0, default_expiry_days=settings.default_expiry_days or 30, preset_options=preset_options)
 
 
 @app.route('/subscriptions/<subscription_id>/edit', methods=['GET', 'POST'])
+@require_auth
 def edit_subscription(subscription_id):
     """Редактирование подписки с ВСЕМИ полями 3x-ui."""
     sub = Subscription.query.get(subscription_id)
@@ -371,6 +534,20 @@ def edit_subscription(subscription_id):
         sub.expiry_days = int(request.form.get('expiry_days', sub.expiry_days))
         sub.enabled = request.form.get('enabled') == 'on'
         sub.flow = request.form.get('flow', sub.flow)
+        
+        # Preset selection
+        preset_id = request.form.get('preset_id')
+        if preset_id:
+            try:
+                preset_id = int(preset_id)
+                if not SubscriptionPreset.query.get(preset_id):
+                    preset_id = None
+            except (ValueError, TypeError):
+                preset_id = None
+        else:
+            preset_id = None
+        sub.preset_id = preset_id
+        
         sub.sync_status = 'pending'
         sub.updated_at = datetime.utcnow()
         
@@ -383,6 +560,15 @@ def edit_subscription(subscription_id):
     
     # GET - форма редактирования со всеми полями
     checked = 'checked' if sub.enabled else ''
+    presets = SubscriptionPreset.query.filter_by(is_active=True).all()
+    
+    # Build preset options HTML
+    preset_options = '<option value="">-- No preset (all configs) --</option>'
+    for p in presets:
+        desc = f" - {p.description}" if p.description else ""
+        selected = 'selected' if sub.preset_id == p.id else ''
+        preset_options += f'<option value="{p.id}" {selected}>{p.name}{desc}</option>'
+    
     return render_template_string(f"""
     <!DOCTYPE html>
     <html>
@@ -398,6 +584,7 @@ def edit_subscription(subscription_id):
         .nav {{ margin-bottom: 20px; }}
         .nav a {{ text-decoration: none; color: #007bff; }}
         .uuid {{ font-family: monospace; font-size: 12px; color: #666; }}
+        .help {{ font-size: 12px; color: #666; margin-top: 4px; }}
     </style>
     </head>
     <body>
@@ -412,6 +599,13 @@ def edit_subscription(subscription_id):
                 <label>UUID</label>
                 <input type="text" name="uuid" value="{sub.uuid or ''}" class="uuid">
                 <small>Current: {sub.uuid or 'Auto-generated'}</small>
+            </div>
+            <div class="form-group">
+                <label>Preset</label>
+                <select name="preset_id">
+                    {{ preset_options|safe }}
+                </select>
+                <div class="help">Filter which configs are included based on config name patterns. <a href="/presets">Manage presets</a></div>
             </div>
             <div class="form-group">
                 <label>Traffic Limit (GB, 0 = unlimited)</label>
@@ -438,10 +632,11 @@ def edit_subscription(subscription_id):
         </form>
     </body>
     </html>
-    """)
+    """, preset_options=preset_options)
 
 
 @app.route('/subscriptions/<subscription_id>/delete', methods=['POST'])
+@require_auth
 def delete_subscription_form(subscription_id):
     """Удаление подписки через форму."""
     sub = Subscription.query.get(subscription_id)
@@ -461,6 +656,7 @@ def delete_subscription_form(subscription_id):
 # ==================== REST API ====================
 
 @app.route('/api/health', methods=['GET'])
+@require_auth
 def health():
     """Health check endpoint."""
     connected = xui_client.connect_all()
@@ -474,6 +670,7 @@ def health():
 
 
 @app.route('/api/subscriptions', methods=['POST'])
+@require_auth
 def create_subscription_api():
     """Создать подписку (REST API)."""
     data = request.get_json() or {}
@@ -488,10 +685,23 @@ def create_subscription_api():
     
     # Создаем подписку со всеми полями из 3x-ui
     uuid_val = str(data.get('uuid', '')).strip()
+    
+    # Handle preset_id
+    preset_id = data.get('preset_id')
+    if preset_id:
+        try:
+            preset_id = int(preset_id)
+            # Verify preset exists
+            if not SubscriptionPreset.query.get(preset_id):
+                preset_id = None
+        except (ValueError, TypeError):
+            preset_id = None
+    
     sub = Subscription(
         email=email,
         uuid=uuid_val if uuid_val else str(uuid_lib.uuid4()),
         sub_token=secrets.token_urlsafe(16),
+        preset_id=preset_id,
         total_gb=float(data.get('total_gb', 0)),
         expiry_days=int(data.get('expiry_days', 0)),
         enabled=data.get('enabled', True),
@@ -514,6 +724,7 @@ def create_subscription_api():
 
 
 @app.route('/api/subscriptions/<subscription_id>', methods=['GET'])
+@require_auth
 def get_subscription(subscription_id):
     """Получить подписку по ID."""
     sub = Subscription.query.get(subscription_id)
@@ -527,6 +738,7 @@ def get_subscription(subscription_id):
 
 
 @app.route('/api/subscriptions/<subscription_id>', methods=['PUT'])
+@require_auth
 def update_subscription_api(subscription_id):
     """Обновить подписку (REST API)."""
     sub = Subscription.query.get(subscription_id)
@@ -544,6 +756,19 @@ def update_subscription_api(subscription_id):
     
     if 'uuid' in data:
         sub.uuid = data['uuid']
+    if 'preset_id' in data:
+        preset_id = data['preset_id']
+        if preset_id:
+            try:
+                preset_id = int(preset_id)
+                if SubscriptionPreset.query.get(preset_id):
+                    sub.preset_id = preset_id
+                else:
+                    return jsonify({'error': f'Preset with id {preset_id} not found'}), 404
+            except (ValueError, TypeError):
+                return jsonify({'error': 'preset_id must be an integer'}), 400
+        else:
+            sub.preset_id = None
     if 'total_gb' in data:
         sub.total_gb = float(data['total_gb'])
     if 'expiry_days' in data:
@@ -570,6 +795,7 @@ def update_subscription_api(subscription_id):
 
 
 @app.route('/api/subscriptions/<subscription_id>', methods=['DELETE'])
+@require_auth
 def delete_subscription_api(subscription_id):
     """Удалить подписку (REST API)."""
     sub = Subscription.query.get(subscription_id)
@@ -592,6 +818,7 @@ def delete_subscription_api(subscription_id):
 
 
 @app.route('/api/subscriptions', methods=['GET'])
+@require_auth
 def list_subscriptions_api():
     """Список всех подписок (REST API)."""
     subs = Subscription.query.order_by(Subscription.created_at.desc()).all()
@@ -604,6 +831,7 @@ def list_subscriptions_api():
 
 
 @app.route('/api/panels', methods=['GET'])
+@require_auth
 def list_panels():
     """Список всех панелей и их статус."""
     panels_info = []
@@ -683,6 +911,31 @@ def subscription_link(token):
                 logger.warning(f"Panel {panel.config.name}: client not found for uuid={sub.uuid}")
         except Exception:
             logger.exception(f"Failed to collect configs from {panel.config.name}")
+    
+    # Filter URIs by preset if subscription has a preset assigned
+    if sub.preset_id:
+        preset = SubscriptionPreset.query.get(sub.preset_id)
+        if preset and preset.is_active:
+            original_count = len(all_uris)
+            filtered_uris = []
+            for uri in all_uris:
+                # Extract config name from URI (part after #)
+                config_name = ""
+                if '#' in uri:
+                    config_name = uri.split('#')[-1]
+                    # URL decode the name
+                    try:
+                        config_name = urllib.parse.unquote(config_name)
+                    except Exception:
+                        pass
+                
+                if preset.matches_config(config_name):
+                    filtered_uris.append(uri)
+                else:
+                    logger.debug(f"Filtered out config '{config_name}' by preset '{preset.name}'")
+            
+            all_uris = filtered_uris
+            logger.info(f"Preset '{preset.name}' filtered configs: {original_count} -> {len(all_uris)}")
     
     if not all_uris:
         return "No active configurations found", 404
@@ -1380,6 +1633,7 @@ SUBSCRIPTION_GUIDE_HTML = """
 
 
 @app.route('/settings', methods=['GET', 'POST'])
+@require_auth
 def global_settings():
     """Глобальные настройки подписок для всех пользователей."""
     settings = GlobalSettings.get()
@@ -1435,6 +1689,8 @@ def global_settings():
         <div class="nav">
             <a href="/">Dashboard</a>
             <a href="/subscriptions">Subscriptions</a>
+            <a href="/presets">Presets</a>
+            <a href="/logout" style="float:right;">Logout</a>
         </div>
         
         <form method="POST">
@@ -1566,6 +1822,7 @@ def global_settings():
 
 
 @app.route('/api/settings', methods=['GET', 'PUT'])
+@require_auth
 def api_settings():
     """REST API для глобальных настроек."""
     settings = GlobalSettings.get()
@@ -1615,7 +1872,123 @@ def api_settings():
     return jsonify({'settings': settings.to_dict()})
 
 
+# ==================== Preset Management API ====================
+
+@app.route('/api/presets', methods=['GET'])
+@require_auth
+def list_presets():
+    """List all subscription presets."""
+    presets = SubscriptionPreset.query.all()
+    return jsonify({
+        'success': True,
+        'count': len(presets),
+        'presets': [p.to_dict() for p in presets]
+    })
+
+
+@app.route('/api/presets', methods=['POST'])
+@require_auth
+def create_preset():
+    """Create a new subscription preset."""
+    data = request.get_json() or {}
+    
+    name = data.get('name')
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    
+    # Check for duplicate name
+    if SubscriptionPreset.query.filter_by(name=name).first():
+        return jsonify({'error': f'Preset with name "{name}" already exists'}), 409
+    
+    preset = SubscriptionPreset(
+        name=name,
+        description=data.get('description', ''),
+        include_patterns=data.get('include_patterns', ''),
+        exclude_patterns=data.get('exclude_patterns', ''),
+        is_active=data.get('is_active', True)
+    )
+    
+    db.session.add(preset)
+    db.session.commit()
+    
+    logger.info(f"Created preset: {name}")
+    
+    return jsonify({
+        'success': True,
+        'preset': preset.to_dict()
+    }), 201
+
+
+@app.route('/api/presets/<int:preset_id>', methods=['GET'])
+@require_auth
+def get_preset(preset_id):
+    """Get a specific preset by ID."""
+    preset = SubscriptionPreset.query.get_or_404(preset_id)
+    return jsonify({
+        'success': True,
+        'preset': preset.to_dict()
+    })
+
+
+@app.route('/api/presets/<int:preset_id>', methods=['PUT'])
+@require_auth
+def update_preset(preset_id):
+    """Update a subscription preset."""
+    preset = SubscriptionPreset.query.get_or_404(preset_id)
+    data = request.get_json() or {}
+    
+    # Check name uniqueness if changing
+    if 'name' in data and data['name'] != preset.name:
+        if SubscriptionPreset.query.filter_by(name=data['name']).first():
+            return jsonify({'error': f'Preset with name "{data["name"]}" already exists'}), 409
+        preset.name = data['name']
+    
+    if 'description' in data:
+        preset.description = data['description']
+    if 'include_patterns' in data:
+        preset.include_patterns = data['include_patterns']
+    if 'exclude_patterns' in data:
+        preset.exclude_patterns = data['exclude_patterns']
+    if 'is_active' in data:
+        preset.is_active = bool(data['is_active'])
+    
+    db.session.commit()
+    
+    logger.info(f"Updated preset: {preset.name}")
+    
+    return jsonify({
+        'success': True,
+        'preset': preset.to_dict()
+    })
+
+
+@app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
+@require_auth
+def delete_preset(preset_id):
+    """Delete a subscription preset."""
+    preset = SubscriptionPreset.query.get_or_404(preset_id)
+    
+    # Check if preset is in use
+    if preset.subscriptions.count() > 0:
+        return jsonify({
+            'error': 'Cannot delete preset that is in use by subscriptions'
+        }), 409
+    
+    db.session.delete(preset)
+    db.session.commit()
+    
+    logger.info(f"Deleted preset: {preset.name}")
+    
+    return jsonify({
+        'success': True,
+        'message': f'Preset {preset_id} ({preset.name}) deleted'
+    })
+
+
+# ==================== Sync API ====================
+
 @app.route('/api/sync/all', methods=['POST'])
+@require_auth
 def sync_all_subscriptions():
     """Force sync all subscriptions with panels."""
     try:
@@ -1641,6 +2014,7 @@ def sync_all_subscriptions():
 
 
 @app.route('/api/sync/<int:subscription_id>', methods=['POST'])
+@require_auth
 def sync_single_subscription(subscription_id):
     """Force sync specific subscription with panels."""
     try:

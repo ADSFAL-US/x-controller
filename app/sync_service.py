@@ -5,11 +5,11 @@ import logging
 import random
 import string
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 from threading import Thread
 import time
 
-from app.models import db, Subscription, SyncLog, PanelState
+from app.models import db, Subscription, SyncLog
 from app.xui_client import XUIClient
 
 logger = logging.getLogger(__name__)
@@ -172,7 +172,7 @@ class SyncService:
                         fresh_sub = Subscription.query.get(sub_id)
                         if fresh_sub:
                             self.sync_subscription(fresh_sub, action)
-                    except Exception as e:
+                    except Exception:
                         logger.exception(f"Error syncing {sub.email}")
                         
         finally:
@@ -192,8 +192,8 @@ class SyncService:
         results = {}
         all_success = True
         
-        # Base client data from subscription
-        base_client_data = subscription.to_xui_client()
+        # Track if we generated ss_password and need to save it
+        ss_password_generated = False
         
         for panel in self.xui_client.panels:
             # Try to login first
@@ -221,38 +221,46 @@ class SyncService:
                 if not inbound_id:
                     continue
                 
+                # Determine protocol type from inbound
+                protocol = inbound.get('protocol', 'vless').lower()
+                
+                # Generate client data appropriate for this protocol
+                client_data = subscription.to_xui_client(protocol=protocol)
+                
+                # Track if ss_password was generated
+                if protocol == 'shadowsocks' and subscription.ss_password and not ss_password_generated:
+                    ss_password_generated = True
+                
                 # Generate unique random email for this inbound to avoid "Duplicate email"
-                # ID (UUID) is the same across all inbounds for the same user
-                client_data = base_client_data.copy()
                 client_data['email'] = _generate_random_email()
                 
-                # Check if inbound uses Reality and determine flow/shortId
-                stream_settings_str = inbound.get('streamSettings', '{}')
-                is_reality = False
-                network = 'tcp'
-                try:
-                    stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
-                    is_reality = bool(stream_settings.get('realitySettings'))
-                    network = stream_settings.get('network', 'tcp')
-                except Exception:
-                    pass
-                
-                # Auto-determine flow based on transport type
-                if is_reality:
-                    if network in ('xhttp', 'splithttp', 'httpupgrade'):
-                        client_data['flow'] = 'xtls-rprx-vision-udp443'
-                    elif network == 'tcp':
-                        client_data['flow'] = 'xtls-rprx-vision'
-                    # else: leave flow unset for other transports
-                
-                if is_reality and action in ('create', 'update'):
-                    # Get available shortId from panel's pool
-                    short_id = _get_available_short_id(inbound)
-                    if short_id:
-                        client_data['shortIds'] = [short_id]
-                        logger.debug(f"Assigned shortId {short_id} for {subscription.email} on inbound {inbound_id}")
-                    else:
-                        logger.warning(f"No available shortId in pool for {subscription.email} on inbound {inbound_id}")
+                # Check if inbound uses Reality and determine flow/shortId (only for VLESS)
+                if protocol == 'vless':
+                    stream_settings_str = inbound.get('streamSettings', '{}')
+                    is_reality = False
+                    network = 'tcp'
+                    try:
+                        stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
+                        is_reality = bool(stream_settings.get('realitySettings'))
+                        network = stream_settings.get('network', 'tcp')
+                    except Exception:
+                        pass
+                    
+                    # Auto-determine flow based on transport type
+                    if is_reality:
+                        if network in ('xhttp', 'splithttp', 'httpupgrade'):
+                            client_data['flow'] = 'xtls-rprx-vision-udp443'
+                        elif network == 'tcp':
+                            client_data['flow'] = 'xtls-rprx-vision'
+                    
+                    if is_reality and action in ('create', 'update'):
+                        # Get available shortId from panel's pool
+                        short_id = _get_available_short_id(inbound)
+                        if short_id:
+                            client_data['shortIds'] = [short_id]
+                            logger.debug(f"Assigned shortId {short_id} for {subscription.email} on inbound {inbound_id}")
+                        else:
+                            logger.warning(f"No available shortId in pool for {subscription.email} on inbound {inbound_id}")
                 
                 success = False
                 error_msg = None
@@ -264,19 +272,27 @@ class SyncService:
                             error_msg = f"Failed to add client to inbound {inbound_id}"
                             
                     elif action == 'update':
-                        # Find client by id (UUID) - same across all inbounds
-                        found = panel.find_client_by_id(subscription.uuid, [inbound])
+                        # Find client by appropriate field based on protocol
+                        found = None
+                        if protocol == 'shadowsocks':
+                            # For Shadowsocks, find by password
+                            found = self._find_client_by_password(panel, subscription.ss_password, [inbound])
+                        else:
+                            # For other protocols, find by UUID
+                            found = panel.find_client_by_id(subscription.uuid, [inbound])
+                        
                         if found:
                             # Use existing client_id from panel
                             client_id = found['client_id']
                             client_data['id'] = client_id
-                            # Preserve existing shortId if any
-                            existing_short_ids = found['client'].get('shortIds', [])
-                            if existing_short_ids:
-                                if isinstance(existing_short_ids, str):
-                                    existing_short_ids = [existing_short_ids]
-                                client_data['shortIds'] = existing_short_ids
-                                logger.debug(f"Preserved shortIds {existing_short_ids} for {subscription.email}")
+                            # Preserve existing shortId if any (only for VLESS)
+                            if protocol == 'vless':
+                                existing_short_ids = found['client'].get('shortIds', [])
+                                if existing_short_ids:
+                                    if isinstance(existing_short_ids, str):
+                                        existing_short_ids = [existing_short_ids]
+                                    client_data['shortIds'] = existing_short_ids
+                                    logger.debug(f"Preserved shortIds {existing_short_ids} for {subscription.email}")
                             success = panel.update_client(inbound_id, client_id, client_data)
                             if not success:
                                 error_msg = f"Failed to update client in inbound {inbound_id}"
@@ -287,8 +303,13 @@ class SyncService:
                                 error_msg = f"Failed to add client to inbound {inbound_id}"
                             
                     elif action == 'delete':
-                        # Find client by id (UUID)
-                        found = panel.find_client_by_id(subscription.uuid, [inbound])
+                        # Find client by appropriate field based on protocol
+                        found = None
+                        if protocol == 'shadowsocks':
+                            found = self._find_client_by_password(panel, subscription.ss_password, [inbound])
+                        else:
+                            found = panel.find_client_by_id(subscription.uuid, [inbound])
+                        
                         if found:
                             success = panel.delete_client(inbound_id, found['client_id'])
                             if not success:
@@ -311,6 +332,12 @@ class SyncService:
                 # Log per-inbound attempt
                 self._log_sync(subscription, f"{panel.config.name}/inbound-{inbound_id}", action, success, error_msg)
             
+            # Save ss_password if it was generated
+            if ss_password_generated:
+                from app.models import db
+                db.session.commit()
+                ss_password_generated = False  # Reset to avoid duplicate saves
+            
             # After successful create/update, fetch subId from panel for subscription link
             if panel_success and action in ('create', 'update'):
                 try:
@@ -321,16 +348,22 @@ class SyncService:
                             settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
                             clients = settings.get('clients', [])
                             for client in clients:
-                                if client.get('id') == subscription.uuid:
+                                # For shadowsocks, match by password; otherwise by id
+                                protocol = inbound.get('protocol', 'vless').lower()
+                                if protocol == 'shadowsocks':
+                                    match = client.get('password') == subscription.ss_password
+                                else:
+                                    match = client.get('id') == subscription.uuid
+                                if match:
                                     sub_id = client.get('subId')
                                     if sub_id and sub_id != subscription.sub_id:
                                         subscription.sub_id = sub_id
                                         logger.info(f"Updated sub_id for {subscription.email}: {sub_id}")
                                     break
-                        except Exception:
-                            continue
+                        except Exception as e:
+                            logger.exception(f"Failed to create subscription on panel {panel.config.name}: {e}")
                 except Exception as e:
-                    logger.warning(f"Failed to fetch subId from panel {panel.config.name}: {e}")
+                    logger.exception(f"Failed to create subscription on panel {panel.config.name}: {e}")
             
             results[panel.config.name] = {
                 'success': panel_success, 
@@ -472,7 +505,7 @@ class SyncService:
                 # Execute plan: 1. creates, 2. deletes, 3. updates
                 self._execute_sync_plan(panel, sync_plan)
                 
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Error in auto-sync for panel {panel.config.name}")
         
         logger.info("Periodic auto-sync completed")
@@ -529,7 +562,7 @@ class SyncService:
                 
                 if panel_client.get('expiryTime') != expected['expiryTime']:
                     needs_update = True
-                    differences.append(f"expiryTime differs")
+                    differences.append("expiryTime differs")
                 
                 if panel_client.get('enable') != expected['enable']:
                     needs_update = True
@@ -589,7 +622,7 @@ class SyncService:
                         status = "✓" if success else "✗"
                         logger.info(f"  {status} CREATE {sub.email} in inbound {inbound_id}: {item['reason']}")
                         
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Error creating {sub.email}")
         
         # 2. EXECUTE DELETES (medium priority)
@@ -599,7 +632,7 @@ class SyncService:
                 status = "✓" if success else "✗"
                 client_email = item.get('panel_client', {}).get('email', 'unknown')
                 logger.info(f"  {status} DELETE {client_email}: {item['reason']}")
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Error deleting client {item['client_id']}")
         
         # 3. EXECUTE UPDATES (lowest priority)
@@ -624,7 +657,7 @@ class SyncService:
                     except (json.JSONDecodeError, TypeError):
                         continue
                         
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Error updating {sub.email}")
     
     def start_background_sync(self, interval_seconds: int = 60):
@@ -654,7 +687,7 @@ class SyncService:
                 # Periodic auto-sync (drift detection) - runs every auto_sync_interval
                 self.run_periodic_sync()
                     
-            except Exception as e:
+            except Exception:
                 logger.exception("Error in sync loop")
             
             # Sleep with break check
@@ -662,3 +695,33 @@ class SyncService:
                 if not self._running:
                     break
                 time.sleep(1)
+
+    def _find_client_by_password(self, panel, password: str, inbounds: list) -> Optional[dict]:
+        """Find client by Shadowsocks password in list of inbounds.
+        
+        Args:
+            panel: XUIPanel instance
+            password: Shadowsocks password to search for
+            inbounds: List of inbound dicts to search in
+            
+        Returns:
+            Dict with inbound_id, client_id, client_data or None if not found
+        """
+        if not password:
+            return None
+            
+        for inbound in inbounds:
+            inbound_id = inbound.get('id')
+            settings_str = inbound.get('settings', '{}')
+            try:
+                settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                for client in settings.get('clients', []):
+                    if client.get('password') == password:
+                        return {
+                            'inbound_id': inbound_id,
+                            'client_id': client.get('id'),
+                            'client': client
+                        }
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return None

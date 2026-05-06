@@ -28,7 +28,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 # Конфигурация БД (абсолютный путь для Docker)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:////app/data/subscriptions.db')
+# For SQLite: disable check_same_thread to allow multi-threaded access from background sync
+database_url = os.environ.get('DATABASE_URL', 'sqlite:////app/data/subscriptions.db')
+if database_url.startswith('sqlite://'):
+    if '?' not in database_url:
+        database_url += '?check_same_thread=False'
+    elif 'check_same_thread' not in database_url:
+        database_url += '&check_same_thread=False'
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Инициализация БД
@@ -806,7 +813,15 @@ def update_subscription_api(subscription_id):
     if 'total_gb' in data:
         sub.total_gb = float(data['total_gb'])
     if 'expiry_days' in data:
-        sub.expiry_days = int(data['expiry_days'])
+        new_expiry_days = int(data['expiry_days'])
+        if new_expiry_days != sub.expiry_days:
+            sub.expiry_days = new_expiry_days
+            # Recalculate absolute expiration timestamp
+            if new_expiry_days > 0:
+                from datetime import timedelta
+                sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
+            else:
+                sub.expire_at = None
     if 'enabled' in data:
         sub.enabled = bool(data['enabled'])
     if 'flow' in data:
@@ -984,8 +999,12 @@ def subscription_link(token):
     
     expire_timestamp = 0
     if sub.expiry_days > 0:
-        expiry_date = sub.created_at + timedelta(days=sub.expiry_days)
-        expire_timestamp = int(expiry_date.timestamp())
+        # Use absolute expire_at if set, otherwise fall back to created_at calculation
+        if sub.expire_at:
+            expire_timestamp = int(sub.expire_at.timestamp())
+        else:
+            expiry_date = sub.created_at + timedelta(days=sub.expiry_days)
+            expire_timestamp = int(expiry_date.timestamp())
     
     # Collect traffic stats from all panels
     total_up = 0
@@ -993,7 +1012,8 @@ def subscription_link(token):
     for panel in xui_client.panels:
         try:
             panel.login()
-            traffic = panel.get_client_traffic_by_uuid(sub.uuid)
+            # Pass ss_password for Shadowsocks traffic lookup
+            traffic = panel.get_client_traffic_by_uuid(sub.uuid, password=sub.ss_password)
             total_up += traffic.get('upload', 0)
             total_down += traffic.get('download', 0)
         except Exception:
@@ -2256,44 +2276,40 @@ def delete_preset(preset_id):
 @app.route('/api/sync/all', methods=['POST'])
 @require_auth
 def sync_all_subscriptions():
-    """Force sync all subscriptions with panels."""
+    """Force sync all subscriptions with panels (respects rate limiting)."""
     try:
         subs = Subscription.query.all()
-        results = []
         
+        # Schedule sync for all subscriptions (goes through rate limiting)
         for sub in subs:
-            result = sync_service.sync_subscription(sub, 'update')
-            results.append({
-                'subscription_id': sub.id,
-                'email': sub.email,
-                'result': result
-            })
+            sync_service.schedule_sync(sub, 'update')
         
         return jsonify({
             'success': True,
-            'message': f'Scheduled sync for {len(results)} subscriptions',
-            'results': results
+            'message': f'Scheduled sync for {len(subs)} subscriptions (rate limited)',
+            'count': len(subs)
         })
     except Exception as e:
-        logger.exception("Failed to sync all subscriptions")
+        logger.exception("Failed to schedule sync for all subscriptions")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/sync/<int:subscription_id>', methods=['POST'])
 @require_auth
 def sync_single_subscription(subscription_id):
-    """Force sync specific subscription with panels."""
+    """Force sync specific subscription with panels (respects rate limiting)."""
     try:
         sub = Subscription.query.get_or_404(subscription_id)
-        result = sync_service.sync_subscription(sub, 'update')
+        # Schedule sync (goes through rate limiting queue)
+        sync_service.schedule_sync(sub, 'update')
         
         return jsonify({
             'success': True,
-            'message': f'Synced subscription {subscription_id}',
-            'result': result
+            'message': f'Scheduled sync for subscription {subscription_id} (rate limited)',
+            'subscription_id': subscription_id
         })
     except Exception as e:
-        logger.exception(f"Failed to sync subscription {subscription_id}")
+        logger.exception(f"Failed to schedule sync for subscription {subscription_id}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

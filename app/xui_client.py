@@ -6,6 +6,7 @@
 import json
 import requests
 import logging
+import threading
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
@@ -31,12 +32,23 @@ class XUIPanel:
     
     def __init__(self, config: PanelConfig):
         self.config = config
-        self.session = requests.Session()
-        # 3x-ui использует cookies для сессии
-        self.session.headers.update({
-            "Accept": "application/json",
-            "X-Requested-With": "XMLHttpRequest"
-        })
+        # Thread-local storage for sessions - each thread gets its own Session
+        self._thread_local = threading.local()
+    
+    def _get_session(self) -> requests.Session:
+        """Get thread-local Session. Creates new session if needed."""
+        if not hasattr(self._thread_local, 'session'):
+            self._thread_local.session = requests.Session()
+            self._thread_local.session.headers.update({
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest"
+            })
+        return self._thread_local.session
+    
+    @property
+    def session(self) -> requests.Session:
+        """Property to access thread-local session."""
+        return self._get_session()
     
     def login(self) -> bool:
         """
@@ -206,9 +218,9 @@ class XUIPanel:
             logger.error(f"Ошибка get_client_traffic: {e}")
             return {}
     
-    def get_client_traffic_by_uuid(self, uuid: str) -> Dict[str, int]:
+    def get_client_traffic_by_uuid(self, uuid: str, password: str = None) -> Dict[str, int]:
         """
-        Получить суммарный трафик клиента по UUID со всех inbounds.
+        Получить суммарный трафик клиента по UUID (или password для Shadowsocks) со всех inbounds.
         Возвращает {'upload': bytes, 'download': bytes}
         """
         total_up = 0
@@ -218,13 +230,8 @@ class XUIPanel:
             inbounds = self.get_inbounds()
             
             for inbound in inbounds:
-                # Проверяем clientStats - там статистика по клиентам
-                client_stats = inbound.get('clientStats', [])
-                
-                for stat in client_stats:
-                    # В 3x-ui clientStats содержит email как идентификатор
-                    # Но мы ищем по совпадению с нашим UUID через inbound.clients
-                    pass
+                # Determine protocol to know how to match client
+                protocol = inbound.get('protocol', 'vless').lower()
                 
                 # Альтернативный подход: ищем в settings.clients
                 settings_str = inbound.get('settings', '{}')
@@ -233,7 +240,14 @@ class XUIPanel:
                     clients = settings.get('clients', [])
                     
                     for client in clients:
-                        if client.get('id') == uuid:
+                        # Match by appropriate field based on protocol
+                        match = False
+                        if protocol == 'shadowsocks' and password:
+                            match = client.get('password') == password
+                        else:
+                            match = client.get('id') == uuid
+                        
+                        if match:
                             # Нашли клиента, теперь ищем его статистику
                             client_email = client.get('email', '')
                             if client_email:

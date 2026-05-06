@@ -146,12 +146,20 @@ class SyncService:
     
     def _execute_pending_syncs_safe(self):
         """Thread-safe wrapper for executing pending syncs."""
+        # Early check: if sync already in progress, skip this execution
+        with self._lock:
+            if self._sync_in_progress:
+                logger.debug("Sync already in progress, skipping this execution")
+                return
+            self._sync_in_progress = True
+            # Clear timer reference since we're executing now
+            self._timer = None
+        
         try:
             self._execute_pending_syncs()
         finally:
             with self._lock:
                 self._sync_in_progress = False
-                self._timer = None
     
     def _execute_pending_syncs(self):
         """Execute all pending syncs."""

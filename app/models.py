@@ -147,8 +147,10 @@ class Subscription(db.Model):
         """
         import uuid as uuid_lib
         
-        # Если uuid пустой или None, генерируем новый
-        client_id = (self.uuid and self.uuid.strip()) or str(uuid_lib.uuid4())
+        # Если uuid пустой или None, генерируем новый и СОХРАНЯЕМ в БД
+        if not self.uuid:
+            self.uuid = str(uuid_lib.uuid4())
+        client_id = self.uuid
         
         # subId всегда равен client_id (UUID) - не используем глобальный sub_id
         sub_id = client_id

@@ -129,9 +129,11 @@ class XUIPanel:
                     logger.info(f"Клиент добавлен в {self.config.name}, inbound {inbound_id}")
                     return True
                 else:
-                    logger.error(f"Ошибка добавления: {result}")
+                    msg = result.get('msg', '')
+                    logger.error(f"Ошибка добавления в {self.config.name}/{inbound_id}: {msg} | client_id={client_data.get('id', 'N/A')[:8]}...")
+                    return False
             else:
-                logger.error(f"HTTP {response.status_code}: {response.text[:200]}")
+                logger.error(f"HTTP {response.status_code} в {self.config.name}/{inbound_id}: {response.text[:200]}")
             
             return False
         except Exception as e:

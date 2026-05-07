@@ -276,6 +276,10 @@ class SyncService:
                 if protocol == 'shadowsocks' and subscription.ss_password and not ss_password_generated:
                     ss_password_generated = True
                 
+                # Save generated identifiers to DB immediately (to_xui_client may have generated UUID/ss_password)
+                db.session.add(subscription)
+                db.session.commit()
+                
                 # Generate unique random email for this inbound to avoid "Duplicate email"
                 client_data['email'] = _generate_random_email()
                 
@@ -314,9 +318,20 @@ class SyncService:
                 
                 try:
                     if action == 'create':
-                        success = panel.add_client(inbound_id, client_data)
-                        if not success:
-                            error_msg = f"Failed to add client to inbound {inbound_id}"
+                        # Check if client already exists in this inbound to avoid duplicates
+                        existing = None
+                        if protocol == 'shadowsocks':
+                            existing = self._find_client_by_password(panel, subscription.ss_password, [inbound])
+                        else:
+                            existing = panel.find_client_by_id(subscription.uuid, [inbound])
+                        
+                        if existing:
+                            logger.debug(f"Client already exists in {panel.config.name}/inbound-{inbound_id}, skipping create")
+                            success = True
+                        else:
+                            success = panel.add_client(inbound_id, client_data)
+                            if not success:
+                                error_msg = f"Failed to add client to inbound {inbound_id}"
                             
                     elif action == 'update':
                         # Find client by appropriate field based on protocol
@@ -424,30 +439,21 @@ class SyncService:
         # Don't commit here, let outer transaction handle it
     
     def sync_all_pending(self):
-        """Sync all subscriptions with pending or failed status."""
+        """Queue all pending subscriptions for sync (through rate-limited queue)."""
         # Get subscriptions from DB that need sync
         db_pending = Subscription.query.filter(
             Subscription.sync_status.in_(['pending', 'failed'])
         ).all()
         
-        # Filter out subscriptions already in the schedule_sync queue
-        # to avoid duplicate sync operations
-        with self._lock:
-            queue_ids = set(self._pending_syncs.keys())
-        
-        pending = [sub for sub in db_pending if sub.id not in queue_ids]
-        
-        if not pending:
-            logger.debug("No pending subscriptions to sync (all in queue)")
+        if not db_pending:
             return
         
-        logger.info(f"Found {len(pending)} pending/failed subscriptions to sync ({len(db_pending) - len(pending)} in queue)")
-        
-        for sub in pending:
+        # Queue them all through schedule_sync (unified entry point)
+        for sub in db_pending:
             action = 'create' if sub.sync_status == 'pending' else 'update'
-            logger.info(f"Syncing subscription {sub.email} ({action})")
-            self.sync_subscription(sub, action)
-            time.sleep(0.1)  # Small delay between requests
+            self.schedule_sync(sub, action)
+        
+        logger.info(f"Queued {len(db_pending)} pending/failed subscriptions for sync")
     
     def check_and_repair(self):
         """
@@ -540,8 +546,27 @@ class SyncService:
                           f"{len(sync_plan['delete'])} deletes, "
                           f"{len(sync_plan['update'])} updates")
                 
-                # Execute plan: 1. creates, 2. deletes, 3. updates
-                self._execute_sync_plan(panel, sync_plan)
+                # Queue creates/updates through schedule_sync (unified entry point)
+                # Only queue if not already pending
+                with self._lock:
+                    for item in sync_plan['create']:
+                        sub = item['subscription']
+                        if sub.id not in self._pending_syncs:
+                            self._pending_syncs[sub.id] = (sub, 'create', 0)
+                    for item in sync_plan['update']:
+                        sub = item['subscription']
+                        if sub.id not in self._pending_syncs:
+                            self._pending_syncs[sub.id] = (sub, 'update', 0)
+                
+                # Execute deletes directly (orphan cleanup, no conflict with queue)
+                for item in sync_plan['delete']:
+                    try:
+                        success = panel.delete_client(item['inbound_id'], item['client_id'])
+                        status = "✓" if success else "✗"
+                        client_email = item.get('panel_client', {}).get('email', 'unknown')
+                        logger.info(f"  {status} DELETE {client_email}: {item['reason']}")
+                    except Exception:
+                        logger.exception(f"Error deleting client {item['client_id']}")
                 
             except Exception:
                 logger.exception(f"Error in auto-sync for panel {panel.config.name}")

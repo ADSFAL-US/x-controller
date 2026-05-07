@@ -124,19 +124,13 @@ class SyncService:
             
             # Sync if: enough time passed OR max defers reached
             if time_since_last >= self.min_sync_interval or defer_count >= self._max_defers:
-                if self._sync_in_progress:
-                    logger.warning("Sync already in progress, deferring...")
-                    return
-                
                 # Cancel any existing timer since we're syncing now
                 if self._timer:
                     self._timer.cancel()
                     self._timer = None
                 
-                self._sync_in_progress = True
-                
-                # Execute sync in a separate thread to not block
-                sync_thread = Thread(target=self._execute_pending_syncs_safe, daemon=True)
+                # Execute sync in a separate thread (will check _sync_in_progress inside)
+                sync_thread = Thread(target=self._try_start_sync, daemon=True)
                 sync_thread.start()
             else:
                 # Need to wait, schedule delayed execution
@@ -147,13 +141,12 @@ class SyncService:
                 if self._timer:
                     self._timer.cancel()
                 
-                self._timer = threading.Timer(wait_time, self._execute_pending_syncs_safe)
+                self._timer = threading.Timer(wait_time, self._try_start_sync)
                 self._timer.daemon = True
                 self._timer.start()
     
-    def _execute_pending_syncs_safe(self):
-        """Thread-safe wrapper for executing pending syncs."""
-        # Early check: if sync already in progress, skip this execution
+    def _try_start_sync(self):
+        """Запускает синхронизацию, если она ещё не идёт."""
         with self._lock:
             if self._sync_in_progress:
                 logger.debug("Sync already in progress, skipping this execution")
@@ -228,6 +221,14 @@ class SyncService:
         results = {}
         all_success = True
         
+        # Generate UUID/ss_password once (if not set) and save to DB before processing inbounds
+        # Call to_xui_client to trigger generation of missing identifiers
+        _ = subscription.to_xui_client(protocol='vless')
+        if subscription.uuid:
+            db.session.add(subscription)
+            db.session.commit()
+            logger.debug(f"Saved generated UUID for {subscription.email}")
+        
         # Track if we generated ss_password and need to save it
         ss_password_generated = False
         
@@ -275,10 +276,6 @@ class SyncService:
                 # Track if ss_password was generated
                 if protocol == 'shadowsocks' and subscription.ss_password and not ss_password_generated:
                     ss_password_generated = True
-                
-                # Save generated identifiers to DB immediately (to_xui_client may have generated UUID/ss_password)
-                db.session.add(subscription)
-                db.session.commit()
                 
                 # Generate unique random email for this inbound to avoid "Duplicate email"
                 client_data['email'] = _generate_random_email()
@@ -525,8 +522,9 @@ class SyncService:
         self._last_auto_sync = current_time
         logger.info("Starting periodic auto-sync (drift detection)...")
         
-        # Get all subscriptions from DB keyed by UUID (id on panels)
-        db_subs = {sub.uuid: sub for sub in Subscription.query.all() if sub.uuid}
+        # Get all subscriptions from DB keyed by UUID and ss_password
+        db_subs_by_uuid = {sub.uuid: sub for sub in Subscription.query.all() if sub.uuid}
+        db_subs_by_password = {sub.ss_password: sub for sub in Subscription.query.all() if sub.ss_password}
         
         # Build sync plan for each panel
         for panel in self.xui_client.panels:
@@ -535,7 +533,7 @@ class SyncService:
                     logger.error(f"Cannot login to panel {panel.config.name} for auto-sync")
                     continue
                 
-                sync_plan = self._calculate_panel_diff(panel, db_subs)
+                sync_plan = self._calculate_panel_diff(panel, db_subs_by_uuid, db_subs_by_password)
                 
                 if not any(sync_plan.values()):
                     logger.info(f"Panel {panel.config.name} is in sync with DB")
@@ -573,10 +571,12 @@ class SyncService:
         
         logger.info("Periodic auto-sync completed")
     
-    def _calculate_panel_diff(self, panel, db_subs: Dict[str, Subscription]) -> Dict:
+    def _calculate_panel_diff(self, panel, db_subs_by_uuid: Dict[str, Subscription],
+                                db_subs_by_password: Dict[str, Subscription]) -> Dict:
         """
         Calculate difference between DB and panel state.
         Returns plan: {'create': [...], 'delete': [...], 'update': [...]}
+        Supports both UUID-based (VLESS/VMess/Trojan) and password-based (Shadowsocks) clients.
         """
         plan = {'create': [], 'delete': [], 'update': []}
         
@@ -586,8 +586,9 @@ class SyncService:
             logger.warning(f"No inbounds on panel {panel.config.name}")
             return plan
         
-        # Build map of clients on panel by UUID (id)
-        panel_clients = {}  # uuid -> {inbound_id, client_data}
+        # Build maps of clients on panel by UUID and by password
+        panel_clients_by_uuid = {}  # uuid -> {inbound_id, client_data}
+        panel_clients_by_password = {}  # password -> {inbound_id, client_data}
         for inbound in inbounds:
             inbound_id = inbound.get('id')
             settings_str = inbound.get('settings', '{}')
@@ -596,7 +597,13 @@ class SyncService:
                 for client in settings.get('clients', []):
                     client_id = client.get('id')
                     if client_id:
-                        panel_clients[client_id] = {
+                        panel_clients_by_uuid[client_id] = {
+                            'inbound_id': inbound_id,
+                            'client': client
+                        }
+                    password = client.get('password')
+                    if password:
+                        panel_clients_by_password[password] = {
                             'inbound_id': inbound_id,
                             'client': client
                         }
@@ -604,16 +611,17 @@ class SyncService:
                 continue
         
         # Find what needs to be created (in DB but not on panel)
-        for uuid, sub in db_subs.items():
-            if uuid not in panel_clients:
-                if sub.enabled:  # Only sync enabled subscriptions
+        # Check UUID-based subscriptions
+        for uuid, sub in db_subs_by_uuid.items():
+            if uuid not in panel_clients_by_uuid:
+                if sub.enabled:
                     plan['create'].append({
                         'subscription': sub,
                         'reason': 'Not found on panel'
                     })
             else:
                 # Check if needs update
-                panel_client = panel_clients[uuid]['client']
+                panel_client = panel_clients_by_uuid[uuid]['client']
                 expected = sub.to_xui_client()
                 
                 needs_update = False
@@ -639,22 +647,71 @@ class SyncService:
                         'reason': f"Drift detected: {', '.join(differences)}"
                     })
         
+        # Check password-based (Shadowsocks) subscriptions
+        for password, sub in db_subs_by_password.items():
+            if password not in panel_clients_by_password:
+                if sub.enabled:
+                    plan['create'].append({
+                        'subscription': sub,
+                        'reason': 'Shadowsocks not found on panel'
+                    })
+            else:
+                # Check if needs update
+                panel_client = panel_clients_by_password[password]['client']
+                expected = sub.to_xui_client(protocol='shadowsocks')
+                
+                needs_update = False
+                differences = []
+                
+                if panel_client.get('totalGB') != expected['totalGB']:
+                    needs_update = True
+                    differences.append(f"totalGB: {panel_client.get('totalGB')} != {expected['totalGB']}")
+                
+                if panel_client.get('expiryTime') != expected['expiryTime']:
+                    needs_update = True
+                    differences.append("expiryTime differs")
+                
+                if panel_client.get('enable') != expected['enable']:
+                    needs_update = True
+                    differences.append(f"enable: {panel_client.get('enable')} != {expected['enable']}")
+                
+                if needs_update:
+                    plan['update'].append({
+                        'subscription': sub,
+                        'panel_client': panel_client,
+                        'differences': differences,
+                        'reason': f"Drift detected (SS): {', '.join(differences)}"
+                    })
+        
         # Find what needs to be deleted (on panel but not in DB or disabled)
-        for client_id, panel_data in panel_clients.items():
-            if client_id not in db_subs:
+        for client_id, panel_data in panel_clients_by_uuid.items():
+            if client_id not in db_subs_by_uuid:
                 plan['delete'].append({
                     'client_id': client_id,
                     'inbound_id': panel_data['inbound_id'],
                     'panel_client': panel_data['client'],
                     'reason': 'Orphan client (not in DB)'
                 })
-            elif not db_subs[client_id].enabled:
+            elif not db_subs_by_uuid[client_id].enabled:
                 plan['delete'].append({
                     'client_id': client_id,
                     'inbound_id': panel_data['inbound_id'],
                     'panel_client': panel_data['client'],
                     'reason': 'Subscription disabled in DB'
                 })
+        
+        # Check Shadowsocks orphans
+        for password, panel_data in panel_clients_by_password.items():
+            if password not in db_subs_by_password:
+                # Also check if it's not a UUID-based client (avoid double-delete)
+                client_id = panel_data['client'].get('id')
+                if client_id not in db_subs_by_uuid:
+                    plan['delete'].append({
+                        'client_id': panel_data['client'].get('id', ''),
+                        'inbound_id': panel_data['inbound_id'],
+                        'panel_client': panel_data['client'],
+                        'reason': 'Shadowsocks orphan (not in DB)'
+                    })
         
         return plan
     
@@ -793,12 +850,15 @@ class SyncService:
         with app.app_context():
             while self._running:
                 try:
-                    # Execute any pending syncs from schedule_sync queue
+                    # Queue pending subscriptions for sync
                     self.sync_all_pending()
                     
                     # Periodic auto-sync (drift detection) - runs every auto_sync_interval
                     # This finds and fixes drift, not the same as pending syncs
                     self.run_periodic_sync()
+                    
+                    # Execute any queued syncs (including those added by sync_all_pending and run_periodic_sync)
+                    self._try_start_sync()
                         
                 except Exception:
                     logger.exception("Error in sync loop")

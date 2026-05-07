@@ -640,7 +640,7 @@ def edit_subscription(subscription_id):
             <div class="form-group">
                 <label>Preset</label>
                 <select name="preset_id">
-                    {{ preset_options|safe }}
+                    {preset_options}
                 </select>
                 <div class="help">Filter which configs are included based on config name patterns. <a href="/presets">Manage presets</a></div>
             </div>

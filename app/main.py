@@ -122,6 +122,10 @@ xui_client = XUIClient("config/panels.yaml")
 # Инициализация сервиса синхронизации (с передачей app для thread-safe операций)
 sync_service = SyncService(xui_client, app=app)
 
+# Запускаем фоновую синхронизацию (60 сек интервал)
+sync_service.start_background_sync(interval_seconds=60)
+logger.info("Background sync service started")
+
 
 # ==================== Authentication ====================
 

@@ -10,6 +10,8 @@ import threading
 from threading import Thread
 import time
 
+from flask import current_app
+
 from app.models import db, Subscription, SyncLog
 from app.xui_client import XUIClient
 
@@ -156,7 +158,9 @@ class SyncService:
             self._timer = None
         
         try:
-            self._execute_pending_syncs()
+            # Need Flask app context for DB operations in background thread
+            with current_app.app_context():
+                self._execute_pending_syncs()
         finally:
             with self._lock:
                 self._sync_in_progress = False

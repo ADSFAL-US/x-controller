@@ -9,6 +9,8 @@ services:
       - "${CONTROLLER_PORT:-8080}:8080"
     environment:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - DATABASE_URL=sqlite:////app/data/subscriptions.db
     volumes:
       - ./config:/app/config:ro

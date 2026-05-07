@@ -2302,13 +2302,16 @@ def sync_all_subscriptions():
         subs = Subscription.query.all()
         
         # Schedule sync for all subscriptions (goes through rate limiting)
+        scheduled = []
         for sub in subs:
             sync_service.schedule_sync(sub, 'update')
+            scheduled.append({'id': sub.id, 'email': sub.email, 'status': 'scheduled'})
         
         return jsonify({
             'success': True,
             'message': f'Scheduled sync for {len(subs)} subscriptions (rate limited)',
-            'count': len(subs)
+            'count': len(subs),
+            'results': scheduled
         })
     except Exception as e:
         logger.exception("Failed to schedule sync for all subscriptions")

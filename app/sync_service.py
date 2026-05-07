@@ -175,6 +175,9 @@ class SyncService:
         """Execute all pending syncs."""
         import time
         
+        logger.info("_execute_pending_syncs started")
+        start_time = time.time()
+        
         # Copy and clear pending syncs under lock
         with self._lock:
             self._last_sync_time = time.time()
@@ -182,6 +185,7 @@ class SyncService:
             self._pending_syncs.clear()
         
         if not pending:
+            logger.info("No pending syncs to execute")
             return
         
         logger.info(f"Executing {len(pending)} pending syncs")
@@ -205,6 +209,9 @@ class SyncService:
                         self.sync_subscription(fresh_sub, action)
                 except Exception:
                     logger.exception(f"Error syncing {sub.email}")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"_execute_pending_syncs completed in {elapsed:.2f}s")
     
     def sync_subscription(self, subscription: Subscription, action: str = 'create') -> Dict:
         """
@@ -217,6 +224,7 @@ class SyncService:
         Returns:
             Dict with results for each panel
         """
+        logger.info(f"Starting sync for {subscription.email} ({action})")
         results = {}
         all_success = True
         
@@ -224,6 +232,7 @@ class SyncService:
         ss_password_generated = False
         
         for panel in self.xui_client.panels:
+            logger.debug(f"Syncing {subscription.email} to panel {panel.config.name}")
             # Try to login first
             if not panel.login():
                 logger.error(f"Cannot connect to panel {panel.config.name}")
@@ -390,6 +399,7 @@ class SyncService:
         subscription.last_sync_at = datetime.utcnow()
         db.session.commit()
         
+        logger.info(f"Completed sync for {subscription.email}: {all_success}")
         return results
     
     def _log_sync(self, subscription: Subscription, panel_name: str, 
@@ -708,6 +718,12 @@ class SyncService:
         """Start background thread for periodic sync."""
         if self._running:
             return
+        
+        # Reset any stuck sync state from previous runs
+        with self._lock:
+            if self._sync_in_progress:
+                logger.warning("Resetting stuck sync_in_progress flag on startup")
+                self._sync_in_progress = False
         
         self._running = True
         self._thread = Thread(target=self._sync_loop, args=(interval_seconds,), daemon=True)

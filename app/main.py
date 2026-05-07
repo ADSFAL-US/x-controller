@@ -119,8 +119,8 @@ with app.app_context():
 # Инициализация клиента 3x-ui
 xui_client = XUIClient("config/panels.yaml")
 
-# Инициализация сервиса синхронизации
-sync_service = SyncService(xui_client)
+# Инициализация сервиса синхронизации (с передачей app для thread-safe операций)
+sync_service = SyncService(xui_client, app=app)
 
 
 # ==================== Authentication ====================

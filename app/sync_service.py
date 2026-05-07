@@ -15,6 +15,9 @@ from flask import current_app
 from app.models import db, Subscription, SyncLog
 from app.xui_client import XUIClient
 
+# Global app reference (set during initialization)
+_app = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,8 +69,10 @@ def _get_available_short_id(inbound: dict) -> Optional[str]:
 class SyncService:
     """Service to synchronize subscriptions across all panels."""
     
-    def __init__(self, xui_client: XUIClient, min_sync_interval: int = 5, auto_sync_interval: int = 300):
+    def __init__(self, xui_client: XUIClient, app=None, min_sync_interval: int = 5, auto_sync_interval: int = 300):
+        global _app
         self.xui_client = xui_client
+        self.app = app or _app  # Store app reference for thread-safe operations
         self._running = False
         self._thread = None
         self._auto_sync_thread = None
@@ -159,7 +164,8 @@ class SyncService:
         
         try:
             # Need Flask app context for DB operations in background thread
-            with current_app.app_context():
+            app = self.app or current_app
+            with app.app_context():
                 self._execute_pending_syncs()
         finally:
             with self._lock:

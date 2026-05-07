@@ -250,13 +250,21 @@ class SyncService:
                 all_success = False
                 continue
             
+            logger.info(f"Panel {panel.config.name}: found {len(inbounds)} inbounds for {subscription.email}")
+            
             panel_success = True
             panel_errors = []
+            inbound_count = 0
             
             for inbound in inbounds:
+                inbound_count += 1
                 inbound_id = inbound.get('id')
                 if not inbound_id:
+                    logger.warning(f"Skipping inbound without ID on panel {panel.config.name}")
                     continue
+                
+                inbound_protocol = inbound.get('protocol', 'unknown')
+                logger.debug(f"Processing inbound {inbound_id} ({inbound_protocol}) [{inbound_count}/{len(inbounds)}]")
                 
                 # Determine protocol type from inbound
                 protocol = inbound.get('protocol', 'vless').lower()
@@ -417,11 +425,23 @@ class SyncService:
     
     def sync_all_pending(self):
         """Sync all subscriptions with pending or failed status."""
-        pending = Subscription.query.filter(
+        # Get subscriptions from DB that need sync
+        db_pending = Subscription.query.filter(
             Subscription.sync_status.in_(['pending', 'failed'])
         ).all()
         
-        logger.info(f"Found {len(pending)} pending/failed subscriptions to sync")
+        # Filter out subscriptions already in the schedule_sync queue
+        # to avoid duplicate sync operations
+        with self._lock:
+            queue_ids = set(self._pending_syncs.keys())
+        
+        pending = [sub for sub in db_pending if sub.id not in queue_ids]
+        
+        if not pending:
+            logger.debug("No pending subscriptions to sync (all in queue)")
+            return
+        
+        logger.info(f"Found {len(pending)} pending/failed subscriptions to sync ({len(db_pending) - len(pending)} in queue)")
         
         for sub in pending:
             action = 'create' if sub.sync_status == 'pending' else 'update'
@@ -748,10 +768,11 @@ class SyncService:
         with app.app_context():
             while self._running:
                 try:
-                    # Sync pending subscriptions (user-triggered)
+                    # Execute any pending syncs from schedule_sync queue
                     self.sync_all_pending()
                     
                     # Periodic auto-sync (drift detection) - runs every auto_sync_interval
+                    # This finds and fixes drift, not the same as pending syncs
                     self.run_periodic_sync()
                         
                 except Exception:

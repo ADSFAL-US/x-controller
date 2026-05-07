@@ -723,22 +723,29 @@ class SyncService:
     
     def _sync_loop(self, interval_seconds: int):
         """Background sync loop with auto-sync."""
-        while self._running:
-            try:
-                # Sync pending subscriptions (user-triggered)
-                self.sync_all_pending()
-                
-                # Periodic auto-sync (drift detection) - runs every auto_sync_interval
-                self.run_periodic_sync()
+        # Need Flask app context for all DB operations in background thread
+        app = self.app
+        if not app:
+            logger.error("Cannot start sync loop: Flask app not provided")
+            return
+        
+        with app.app_context():
+            while self._running:
+                try:
+                    # Sync pending subscriptions (user-triggered)
+                    self.sync_all_pending()
                     
-            except Exception:
-                logger.exception("Error in sync loop")
-            
-            # Sleep with break check
-            for _ in range(interval_seconds):
-                if not self._running:
-                    break
-                time.sleep(1)
+                    # Periodic auto-sync (drift detection) - runs every auto_sync_interval
+                    self.run_periodic_sync()
+                        
+                except Exception:
+                    logger.exception("Error in sync loop")
+                
+                # Sleep with break check
+                for _ in range(interval_seconds):
+                    if not self._running:
+                        break
+                    time.sleep(1)
 
     def _find_client_by_password(self, panel, password: str, inbounds: list) -> Optional[dict]:
         """Find client by Shadowsocks password in list of inbounds.

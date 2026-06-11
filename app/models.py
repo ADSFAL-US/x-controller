@@ -309,6 +309,11 @@ class GlobalSettings(db.Model):
     happ_routing_enabled = db.Column(db.Boolean, default=False)
     happ_routing_config = db.Column(db.Text, nullable=True)
     
+    # Expired subscription placeholders
+    expired_sub_enabled = db.Column(db.Boolean, default=False)
+    expired_preset_id = db.Column(db.Integer, db.ForeignKey('subscription_presets.id'), nullable=True)
+    expired_preset = db.relationship('SubscriptionPreset', foreign_keys=[expired_preset_id])
+    
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     @classmethod
@@ -342,6 +347,8 @@ class GlobalSettings(db.Model):
             'support_url': self.support_url,
             'happ_routing_enabled': self.happ_routing_enabled,
             'happ_routing_config': self.happ_routing_config,
+            'expired_sub_enabled': self.expired_sub_enabled,
+            'expired_preset_id': self.expired_preset_id,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 

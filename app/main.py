@@ -69,6 +69,8 @@ with app.app_context():
                 ('support_url', 'VARCHAR(255)'),
                 ('happ_routing_enabled', 'BOOLEAN DEFAULT 0'),
                 ('happ_routing_config', 'TEXT'),
+                ('expired_sub_enabled', 'BOOLEAN DEFAULT 0'),
+                ('expired_preset_id', 'INTEGER'),
             ]
             
             for col_name, col_type in migrations:
@@ -925,6 +927,131 @@ def subscription_link(token):
     # Load global settings
     gsettings = GlobalSettings.get()
     
+    # Check if subscription is expired
+    is_expired = sub.expire_at and sub.expire_at < datetime.utcnow()
+    
+    # If expired and feature enabled → return placeholders + optionally real configs
+    if is_expired and gsettings.expired_sub_enabled:
+        # Generate 3 VLESS placeholder URIs
+        placeholder_names = [
+            "❌ Ваша подписка просрочена",
+            "❌ Продлить подписку: @avavapng_bot",
+            "❌ /доступ к телеграм/",
+        ]
+        all_uris = []
+        for i, name in enumerate(placeholder_names):
+            fake_uuid = f"00000000-0000-0000-0000-00000000000{i+1}"
+            encoded_name = urllib.parse.quote(name)
+            all_uris.append(f"vless://{fake_uuid}@127.0.0.1:1?type=tcp&security=none#{encoded_name}")
+        
+        # Optionally collect real configs filtered by expired preset
+        if gsettings.expired_preset_id:
+            expired_preset = SubscriptionPreset.query.get(gsettings.expired_preset_id)
+            if expired_preset and expired_preset.is_active:
+                for panel in xui_client.panels:
+                    try:
+                        panel.login()
+                        client_sub_id = None
+                        inbounds = panel.get_inbounds()
+                        for inbound in inbounds:
+                            settings_str = inbound.get('settings', '{}')
+                            protocol = inbound.get('protocol', 'vless').lower()
+                            try:
+                                settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                                clients = settings.get('clients', [])
+                                for client in clients:
+                                    match = False
+                                    if protocol == 'shadowsocks':
+                                        match = client.get('password') == sub.ss_password
+                                    else:
+                                        match = client.get('id') == sub.uuid
+                                    if match:
+                                        client_sub_id = client.get('subId') or client.get('id')
+                                        break
+                                if client_sub_id:
+                                    break
+                            except Exception:
+                                continue
+                        if client_sub_id:
+                            sub_content = panel.get_subscription_content(client_sub_id)
+                            if sub_content:
+                                try:
+                                    decoded = base64.b64decode(sub_content).decode('utf-8')
+                                    uris = [u.strip() for u in decoded.split('\n') if u.strip()]
+                                    for uri in uris:
+                                        config_name = ""
+                                        if '#' in uri:
+                                            config_name = uri.split('#')[-1]
+                                            try:
+                                                config_name = urllib.parse.unquote(config_name)
+                                            except Exception:
+                                                pass
+                                        if expired_preset.matches_config(config_name):
+                                            all_uris.append(uri)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
+        
+        if not all_uris:
+            return "No active configurations found", 404
+        
+        # Expired timestamp for headers
+        expire_timestamp = int(sub.expire_at.timestamp()) if sub.expire_at else 0
+        
+        def _utf8_header(value: str) -> str:
+            return value.encode('utf-8').decode('latin-1')
+        
+        profile_title = (gsettings.sub_title or sub.email)[:25]
+        headers = {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'profile-title': _utf8_header(profile_title),
+            'subscription-userinfo': f"upload=0; download=0; total=0; expire={expire_timestamp}",
+            'profile-update-interval': '1',
+            'sub-expire': '1',
+        }
+        if gsettings.sub_expire_button_link:
+            headers['sub-expire-button-link'] = gsettings.sub_expire_button_link
+        
+        # All standard Happ headers
+        if gsettings.sub_description:
+            headers['sub-info-text'] = _utf8_header(gsettings.sub_description[:200])
+            headers['sub-info-color'] = 'blue'
+        if gsettings.sub_info_button_text:
+            headers['sub-info-button-text'] = _utf8_header(gsettings.sub_info_button_text[:25])
+        if gsettings.sub_info_button_link:
+            headers['sub-info-button-link'] = gsettings.sub_info_button_link
+        if gsettings.announce_text:
+            headers['announce'] = _utf8_header(gsettings.announce_text[:200])
+        if gsettings.fallback_url:
+            headers['fallback-url'] = gsettings.fallback_url
+        if gsettings.profile_web_page_url:
+            headers['profile-web-page-url'] = gsettings.profile_web_page_url
+        if gsettings.support_url:
+            headers['support-url'] = gsettings.support_url
+        if gsettings.happ_routing_enabled:
+            routing_config = gsettings.happ_routing_config or '{"Name":"RoscomVPN","GlobalProxy":"true","UseChunkFiles":"false","RemoteDns":"8.8.8.8","DomesticDns":"77.88.8.8","RemoteDNSType":"DoH","RemoteDNSDomain":"https://8.8.8.8/dns-query","RemoteDNSIP":"8.8.8.8","DomesticDNSType":"DoH","DomesticDNSDomain":"https://77.88.8.8/dns-query","DomesticDNSIP":"77.88.8.8","Geoipurl":"https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geoip@202605020543/release/geoip.dat","Geositeurl":"https://cdn.jsdelivr.net/gh/hydraponique/roscomvpn-geosite@202604152235/release/geosite.dat","RouteOrder":"block-proxy-direct","DirectSites":[],"DirectIp":[],"ProxySites":[],"ProxyIp":[],"BlockSites":[],"BlockIp":[],"DomainStrategy":"IPIfNonMatch","FakeDNS":"false"}'
+            headers['custom-tunnel-config'] = _utf8_header(routing_config)
+        
+        if is_clash:
+            # Build Clash YAML with placeholders (no real configs in Clash for expired)
+            proxies = []
+            for i, name in enumerate(placeholder_names):
+                proxies.append({
+                    'name': name,
+                    'type': 'vless',
+                    'server': '127.0.0.1',
+                    'port': 1,
+                    'uuid': f"00000000-0000-0000-0000-00000000000{i+1}",
+                })
+            yaml_text = _build_clash_yaml(proxies, gsettings.custom_rules or '')
+            headers['Content-Type'] = 'text/yaml; charset=utf-8'
+            return yaml_text, 200, headers
+        else:
+            uri_text = '\n'.join(all_uris)
+            encoded = base64.b64encode(uri_text.encode()).decode()
+            return encoded, 200, headers
+    
     # Browser → HTML guide
     if is_browser and not is_clash:
         return render_template_string(SUBSCRIPTION_GUIDE_HTML, 
@@ -1746,8 +1873,26 @@ def global_settings():
         settings.happ_routing_enabled = request.form.get('happ_routing_enabled') == 'on'
         settings.happ_routing_config = request.form.get('happ_routing_config', '')
         
+        # Expired subscription placeholders
+        settings.expired_sub_enabled = request.form.get('expired_sub_enabled') == 'on'
+        preset_id = request.form.get('expired_preset_id')
+        if preset_id:
+            try:
+                settings.expired_preset_id = int(preset_id)
+            except (ValueError, TypeError):
+                settings.expired_preset_id = None
+        else:
+            settings.expired_preset_id = None
+        
         db.session.commit()
         return redirect('/settings')
+    
+    presets = SubscriptionPreset.query.filter_by(is_active=True).all()
+    expired_preset_options = '<option value="">-- No preset (placeholders only) --</option>'
+    for p in presets:
+        selected = 'selected' if settings.expired_preset_id == p.id else ''
+        desc = f" - {p.description}" if p.description else ""
+        expired_preset_options += f'<option value="{p.id}" {selected}>{p.name}{desc}</option>'
     
     return render_template_string("""
     <!DOCTYPE html>
@@ -1898,11 +2043,30 @@ def global_settings():
                 <div class="help">JSON конфигурация для Happ routing. Оставьте пустым для использования RoscomVPN JSONSUB по умолчанию. Генератор: <a href="https://routing.happ.su" target="_blank">routing.happ.su</a></div>
             </div>
             
+            <hr style="margin: 30px 0;">
+            <h3>Expired Subscription Placeholders</h3>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="expired_sub_enabled" {% if settings.expired_sub_enabled %}checked{% endif %}>
+                    Enable Expired Subscription Placeholders
+                </label>
+                <div class="help">Если включено — просроченные подписки получат 3 placeholder-конфига с информацией об истечении вместо 404</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Expired Preset (optional):</label>
+                <select name="expired_preset_id">
+                    {{ expired_preset_options|safe }}
+                </select>
+                <div class="help">Если выбран — к placeholders добавится реальные конфиги, отфильтрованные по этому пресету (например, конфиг для Telegram)</div>
+            </div>
+            
             <button type="submit">Save Settings</button>
         </form>
     </body>
     </html>
-    """, settings=settings)
+    """, settings=settings, expired_preset_options=expired_preset_options)
 
 
 @app.route('/api/settings', methods=['GET', 'PUT'])
@@ -1949,6 +2113,18 @@ def api_settings():
             settings.happ_routing_enabled = bool(data['happ_routing_enabled'])
         if 'happ_routing_config' in data:
             settings.happ_routing_config = data['happ_routing_config']
+        
+        # Expired subscription placeholders
+        if 'expired_sub_enabled' in data:
+            settings.expired_sub_enabled = bool(data['expired_sub_enabled'])
+        if 'expired_preset_id' in data:
+            if data['expired_preset_id']:
+                try:
+                    settings.expired_preset_id = int(data['expired_preset_id'])
+                except (ValueError, TypeError):
+                    settings.expired_preset_id = None
+            else:
+                settings.expired_preset_id = None
         
         db.session.commit()
         return jsonify({'success': True, 'settings': settings.to_dict()})

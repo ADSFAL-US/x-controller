@@ -15,6 +15,7 @@ env/
 .idea/
 .vscode/
 *.swp
+.windsurf/
 
 # Data (SQLite database)
 data/

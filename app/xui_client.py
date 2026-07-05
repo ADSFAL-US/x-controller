@@ -15,16 +15,28 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PanelConfig:
-    """Конфигурация панели."""
+    """Конфигурация панели 3x-ui.
+
+    Поддерживает две версии API:
+    - legacy (< 2.6.0): session-cookie auth через login/password
+    - 2.6.0+: Bearer token (Settings → Security → API Token)
+
+    На 2.6.0+ приоритет аутентификации:
+    1. api_token (Bearer header, не требует CSRF)
+    2. username/password (session cookie, fallback)
+    """
     name: str
     host: str  # Базовый хост для API панели, например https://panel.example.com:2053
-    username: str
-    password: str
+    username: str = ''
+    password: str = ''
     priority: int = 1
     max_clients: int = 100
     panel_path: str = ''  # Путь к панели API, например /secret-path
     sub_host: str = ''  # Отдельный хост для подписок (если отличается от host)
     sub_path: str = '/sub'  # Путь к подписке
+    api_version: str = 'legacy'  # 'legacy' | '2.6.0' | '2.7.0' | …
+    api_token: str = ''  # Bearer token для 2.6.0+
+    two_factor_code: str = ''  # OTP для 2FA (только 2.6.0+)
 
 
 class XUIPanel:
@@ -43,6 +55,11 @@ class XUIPanel:
                 "Accept": "application/json",
                 "X-Requested-With": "XMLHttpRequest"
             })
+            # Если есть api_token — сразу проставляем Bearer header
+            if self.config.api_token:
+                self._thread_local.session.headers.update({
+                    "Authorization": f"Bearer {self.config.api_token}"
+                })
         return self._thread_local.session
     
     @property
@@ -50,17 +67,56 @@ class XUIPanel:
         """Property to access thread-local session."""
         return self._get_session()
     
+    @property
+    def _is_v2_6_plus(self) -> bool:
+        """True если панель использует API >= 2.6.0."""
+        version = self.config.api_version
+        try:
+            return float(version) >= 2.6
+        except (ValueError, TypeError):
+            return False
+    
     def login(self) -> bool:
         """
         Авторизоваться в панели 3x-ui.
-        POST {panel_path}/login
+        
+        Для api_version >= 2.6.0:
+          - Если задан api_token — используется Bearer-аутентификация
+            (не требует /login, сразу проверяется через /panel/api/server/status)
+          - Если api_token не задан — fallback на username/password + опциональный 2FA
+        
+        Для legacy (< 2.6.0):
+          - POST {panel_path}/login с username/password
         """
         try:
+            # Если есть api_token — проверяем его работоспособность
+            if self.config.api_token:
+                logger.info(f"Панель {self.config.name}: проверка Bearer токена…")
+                status_url = f"{self.config.host}{self.config.panel_path}/panel/api/server/status"
+                resp = self.session.get(status_url, timeout=30)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("success"):
+                        logger.info(f"Панель {self.config.name}: Bearer токен действителен")
+                        return True
+                    logger.warning(f"Панель {self.config.name}: Bearer токен недействителен, пробуем login…")
+                else:
+                    logger.warning(f"Панель {self.config.name}: HTTP {resp.status_code} с токеном, пробуем login…")
+            
+            # Fallback: username/password login
+            if not self.config.username or not self.config.password:
+                logger.error(f"Панель {self.config.name}: нет credentials для login")
+                return False
+            
             url = f"{self.config.host}{self.config.panel_path}/login"
             data = {
                 "username": self.config.username,
                 "password": self.config.password
             }
+            # 2FA код для 2.6.0+
+            if self._is_v2_6_plus and self.config.two_factor_code:
+                data["twoFactorCode"] = self.config.two_factor_code
+            
             response = self.session.post(url, data=data, timeout=30)
             
             if response.status_code == 200:
@@ -357,7 +413,12 @@ class XUIClient:
                 panel_config = PanelConfig(**panel_data)
                 panel = XUIPanel(panel_config)
                 self.panels.append(panel)
-                logger.info(f"Загружена панель: {panel_config.name} ({panel_config.host}), sub_path={panel_config.sub_path}")
+                auth_method = 'Bearer token' if panel_config.api_token else 'username/password'
+                logger.info(
+                    f"Загружена панель: {panel_config.name} "
+                    f"({panel_config.host}), API={panel_config.api_version}, "
+                    f"auth={auth_method}, sub_path={panel_config.sub_path}"
+                )
             
             # Сортировка по приоритету
             self.panels.sort(key=lambda p: p.config.priority)

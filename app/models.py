@@ -375,3 +375,137 @@ class PanelState(db.Model):
             'inbound_id': self.inbound_id,
             'last_check_at': self.last_check_at.isoformat() if self.last_check_at else None
         }
+
+
+# ==================== Config Transform Rules ====================
+
+TRANSFORM_FIELDS = [
+    'address', 'port', 'name',
+    'type', 'security', 'encryption',
+    'sni', 'pbk', 'fp', 'sid', 'flow',
+    'path', 'host', 'alpn',
+    # xHTTP / Splithttp settings
+    'mode',
+    'scMaxConcurrentPosts', 'scMaxEachPostBytes',
+    'scMinPostsIntervalMs', 'scMaxBufferedPosts',
+    # xHTTP extra padding / obfuscation
+    'xPaddingBytes', 'uplinkHTTPMethod',
+    'xPaddingMethod', 'xPaddingHeader',
+    'xPaddingKey', 'xPaddingObfsMode',
+]
+
+TRANSFORM_FIELD_LABELS = {
+    'address': 'Address (host)',
+    'port': 'Port',
+    'name': 'Config name (#fragment)',
+    'type': 'Network type (tcp/ws/grpc/xhttp)',
+    'security': 'Security (none/tls/reality)',
+    'encryption': 'Encryption',
+    'sni': 'SNI (serverName)',
+    'pbk': 'Public Key (Reality)',
+    'fp': 'Fingerprint (Reality)',
+    'sid': 'Short ID (Reality)',
+    'flow': 'Flow (xtls-rprx-vision)',
+    'path': 'Path (WS/xHTTP)',
+    'host': 'Host header (WS/xHTTP)',
+    'alpn': 'ALPN (h2,http/1.1)',
+    # xHTTP / Splithttp
+    'mode': 'xHTTP mode (packet-up/auto)',
+    'scMaxConcurrentPosts': 'xHTTP Max concurrent posts',
+    'scMaxEachPostBytes': 'xHTTP Max bytes per post',
+    'scMinPostsIntervalMs': 'xHTTP Min post interval (ms)',
+    'scMaxBufferedPosts': 'xHTTP Max buffered posts',
+    # xHTTP extra padding / obfuscation
+    'xPaddingBytes': 'xHTTP Padding bytes range',
+    'uplinkHTTPMethod': 'xHTTP Uplink method (GET/POST)',
+    'xPaddingMethod': 'xHTTP Padding method',
+    'xPaddingHeader': 'xHTTP Padding header name',
+    'xPaddingKey': 'xHTTP Padding key',
+    'xPaddingObfsMode': 'xHTTP Padding obfuscation mode',
+}
+
+
+class ConfigTransformRule(db.Model):
+    """Global rule for transforming config URIs in subscriptions.
+
+    Applies to all subscriptions. Rules match by config name (substring),
+    apply transforms (field→value), and optionally enforce traffic limits.
+    Multiple rules can match the same config — they apply cascadingly by priority.
+    """
+
+    __tablename__ = 'config_transform_rules'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Rule identification
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+
+    # Selector — config name must contain this substring (case-insensitive)
+    selector_pattern = db.Column(db.Text, nullable=False)
+    selector_exclude_pattern = db.Column(db.Text, nullable=True)
+
+    # Transforms: JSON array of {"field": "...", "value": "..."}
+    # field must be one of TRANSFORM_FIELDS
+    transforms_json = db.Column(db.Text, nullable=False, default='[]')
+
+    # Traffic limit: if > 0 and subscriber's used traffic >= limit → config excluded
+    traffic_limit_gb = db.Column(db.Float, default=0)
+
+    # Priority: higher = applied first
+    priority = db.Column(db.Integer, default=100)
+
+    # Status
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        """Convert to dictionary for API responses."""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'selector_pattern': self.selector_pattern,
+            'selector_exclude_pattern': self.selector_exclude_pattern,
+            'transforms_json': self.transforms_json,
+            'traffic_limit_gb': self.traffic_limit_gb,
+            'priority': self.priority,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def get_transforms(self) -> list:
+        """Parse and return transforms_json as a list of dicts."""
+        import json
+        try:
+            raw = json.loads(self.transforms_json) if isinstance(self.transforms_json, str) else self.transforms_json
+            if isinstance(raw, list):
+                return raw
+            return []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_transforms(self, transforms: list):
+        """Serialize transforms list to JSON string."""
+        import json
+        self.transforms_json = json.dumps(transforms, ensure_ascii=False)
+
+    def matches_config(self, config_name: str) -> bool:
+        """Check if a config name matches this rule's selectors (substring, case-insensitive)."""
+        config_name_lower = config_name.lower()
+
+        # Include: name must contain the pattern
+        if self.selector_pattern:
+            patterns = [p.strip().lower() for p in self.selector_pattern.split(',') if p.strip()]
+            if patterns and not any(p in config_name_lower for p in patterns):
+                return False
+
+        # Exclude: name must NOT contain the pattern
+        if self.selector_exclude_pattern:
+            excludes = [p.strip().lower() for p in self.selector_exclude_pattern.split(',') if p.strip()]
+            if any(p in config_name_lower for p in excludes):
+                return False
+
+        return True

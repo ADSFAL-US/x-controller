@@ -1090,78 +1090,91 @@ def subscription_link(token):
                                      sub_url=f"{request.host_url}sub/{token}")
     
     # Collect subscription content from all panels
+    # Also collect per-inbound traffic for each config individually
     all_uris = []
+    config_traffic = {}  # uri_str -> bytes_used (per-inbound, not summed)
+    total_up = 0
+    total_down = 0
+
     for panel in xui_client.panels:
         try:
             panel.login()
-            client_sub_id = None
-            
-            # ALWAYS find client on THIS panel by UUID (or password for Shadowsocks)
-            # Each panel generates its own subId - cannot use global sub_id
+
+            # Step 1: find ALL inbounds with our client, get per-inbound traffic
             inbounds = panel.get_inbounds()
+            inbound_traffic = {}  # port -> used_bytes for this inbound's client
+            found_sub_id = None
+
             for inbound in inbounds:
-                settings_str = inbound.get('settings', '{}')
+                inbound_id = inbound.get('id')
                 protocol = inbound.get('protocol', 'vless').lower()
+                settings_str = inbound.get('settings', '{}')
                 try:
                     settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
-                    clients = settings.get('clients', [])
-                    for client in clients:
-                        # Match by appropriate field based on protocol
+                    for client in settings.get('clients', []):
                         match = False
                         if protocol == 'shadowsocks':
                             match = client.get('password') == sub.ss_password
                         else:
                             match = client.get('id') == sub.uuid
-                        
+
                         if match:
-                            client_sub_id = client.get('subId') or client.get('id')
-                            logger.debug(f"Panel {panel.config.name}: found client with subId={client_sub_id}")
+                            client_email = client.get('email', '')
+                            if client_email:
+                                traffic = panel.get_client_traffic(client_email)
+                                up = traffic.get('up', 0)
+                                down = traffic.get('down', 0)
+                                port = inbound.get('port', 443)
+                                inbound_traffic[port] = up + down
+                                total_up += up
+                                total_down += down
+
+                            if not found_sub_id:
+                                found_sub_id = client.get('subId') or client.get('id')
                             break
-                    if client_sub_id:
-                        break
                 except Exception:
                     continue
-            
-            if client_sub_id:
-                # Get ready subscription from panel using sub_id
-                sub_content = panel.get_subscription_content(client_sub_id)
+
+            # Step 2: get subscription content and map each URI to its per-inbound traffic
+            if found_sub_id:
+                sub_content = panel.get_subscription_content(found_sub_id)
                 if sub_content:
                     try:
                         decoded = base64.b64decode(sub_content).decode('utf-8')
                         uris = [u.strip() for u in decoded.split('\n') if u.strip()]
-                        all_uris.extend(uris)
-                        logger.info(f"Panel {panel.config.name}: added {len(uris)} configs via sub_id={client_sub_id}")
+                        for uri in uris:
+                            all_uris.append(uri)
+                            # Match URI to its inbound traffic by port
+                            parsed = parse_vless_uri(uri)
+                            if parsed and parsed['port'] in inbound_traffic:
+                                config_traffic[uri] = inbound_traffic[parsed['port']]
+                            else:
+                                config_traffic[uri] = 0
+                        logger.info(
+                            f"Panel {panel.config.name}: added {len(uris)} configs "
+                            f"via sub_id={found_sub_id}"
+                        )
                     except Exception as e:
                         logger.warning(f"Panel {panel.config.name}: failed to decode subscription: {e}")
                 else:
-                    logger.warning(f"Panel {panel.config.name}: empty subscription for sub_id={client_sub_id}")
+                    logger.warning(f"Panel {panel.config.name}: empty subscription for sub_id={found_sub_id}")
             else:
                 logger.warning(f"Panel {panel.config.name}: client not found for uuid={sub.uuid}")
         except Exception:
             logger.exception(f"Failed to collect configs from {panel.config.name}")
-    
-    # Collect traffic stats from all panels (needed for transform rules and headers)
-    total_up = 0
-    total_down = 0
-    for panel in xui_client.panels:
-        try:
-            panel.login()
-            traffic = panel.get_client_traffic_by_uuid(sub.uuid, password=sub.ss_password)
-            total_up += traffic.get('upload', 0)
-            total_down += traffic.get('download', 0)
-        except Exception:
-            pass
-    
-    # Apply global config transform rules (before preset filtering)
+
+    # Apply global config transform rules (with per-config traffic)
     rules = ConfigTransformRule.query.filter_by(is_active=True).order_by(
         ConfigTransformRule.priority.desc()
     ).all()
     if rules:
         original_count = len(all_uris)
-        all_uris = apply_transform_rules(all_uris, rules, (total_up + total_down) / (1024**3))
+        all_uris = apply_transform_rules(
+            all_uris, rules,
+            total_used_map={u: config_traffic.get(u, 0) / (1024**3) for u in all_uris}
+        )
         logger.info(
-            f"Config transform rules applied: {original_count} -> {len(all_uris)} configs "
-            f"(used {(total_up + total_down) / (1024**3):.2f}GB)"
+            f"Config transform rules applied: {original_count} -> {len(all_uris)} configs"
         )
     
     # Filter URIs by preset if subscription has a preset assigned
@@ -1506,14 +1519,15 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
 def apply_transform_rules(
     uris: list,
     rules: list,
-    total_used_gb: float,
+    total_used_map: dict = None,
 ) -> list:
     """Apply config transform rules to a list of vless:// URIs.
 
     Args:
         uris: List of vless:// URI strings from panels.
         rules: List of ConfigTransformRule, should be ordered by priority desc.
-        total_used_gb: Total traffic used by this subscription (GB).
+        total_used_map: Dict mapping uri_str -> used_gb for per-config traffic.
+                        If None, no traffic limits are applied.
 
     Returns:
         Modified list of URI strings (some may be excluded by traffic limits).
@@ -1534,6 +1548,11 @@ def apply_transform_rules(
         current_uri = uri_str
         excluded = False
 
+        # Get per-config used traffic (0 if not found / no map)
+        config_used_gb = 0
+        if total_used_map is not None:
+            config_used_gb = total_used_map.get(uri_str, 0)
+
         for rule in rules:
             if not rule.is_active:
                 continue
@@ -1542,13 +1561,13 @@ def apply_transform_rules(
             if not rule.matches_config(config_name):
                 continue
 
-            # Check traffic limit
+            # Check traffic limit (per-config, not global)
             traffic_limit = rule.traffic_limit_gb or 0
-            if traffic_limit > 0 and total_used_gb >= traffic_limit:
+            if traffic_limit > 0 and config_used_gb >= traffic_limit:
                 # Exclude this config entirely
                 logger.info(
                     f"Config '{config_name}' excluded by rule '{rule.name}' "
-                    f"(used {total_used_gb:.2f}GB >= limit {traffic_limit}GB)"
+                    f"(used {config_used_gb:.2f}GB >= limit {traffic_limit}GB)"
                 )
                 excluded = True
                 break

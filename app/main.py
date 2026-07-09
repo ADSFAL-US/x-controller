@@ -15,6 +15,7 @@ from flask import Flask, jsonify, request, render_template_string, redirect, url
 from app.xui_client import XUIClient
 from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 # Создание Flask приложения
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Конфигурация БД (абсолютный путь для Docker)
 # For SQLite: disable check_same_thread to allow multi-threaded access from background sync

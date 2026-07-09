@@ -1761,7 +1761,8 @@ SUBSCRIPTION_GUIDE_HTML = """
         <div class="link" id="sub-link">{{ sub_url }}</div>
         <br>
         <button id="copy-btn" onclick="copyLink()">📋 Копировать ссылку</button>
-        <p style="font-size: 12px; color: #888; margin-top: 10px;">Нажмите кнопку, чтобы скопировать ссылку для импорта в клиент</p>
+        <button id="routing-btn" onclick="importRouting()" style="background: #ff9800; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; margin-left: 10px;">🌐 Импорт маршрутизации</button>
+        <p style="font-size: 12px; color: #888; margin-top: 10px;">Нажмите кнопку, чтобы скопировать ссылку для импорта в клиент. Кнопка "Импорт маршрутизации" — для Happ: все .ru/.su и российские сайты пойдут напрямую, в обход VPN.</p>
     </div>
     
     <h2>📱 Выберите платформу</h2>
@@ -2077,6 +2078,22 @@ SUBSCRIPTION_GUIDE_HTML = """
                 btn.innerText = originalText;
                 btn.classList.remove('btn-success');
             }, 2000);
+        }
+        
+        function importRouting() {
+            const routingLink = 'happ://routing/add/ewogICAgIkJsb2NrSXAiOiBbCiAgICBdLAogICAgIkJsb2NrU2l0ZXMiOiBbCiAgICAgICAgImdlb3NpdGU6V0lOLVNQWSIKICAgIF0sCiAgICAiRGlyZWN0SXAiOiBbCiAgICAgICAgIjEwLjAuMC4wLzgiLAogICAgICAgICIxNzIuMTYuMC4wLzEyIiwKICAgICAgICAiMTkyLjE2OC4wLjAvMTYiLAogICAgICAgICIxNjkuMjU0LjAuMC8xNiIsCiAgICAgICAgIjIyNC4wLjAuMC80IiwKICAgICAgICAiMjU1LjI1NS4yNTUuMjU1IiwKICAgICAgICAiZ2VvaXA6UlUiCiAgICBdLAogICAgIkRpcmVjdFNpdGVzIjogWwogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLUdPVi1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkFOSy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkVUVElORy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktRUNPTU1FUkNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1FTlRFUlRBSU5NRU5ULVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1NRURJQS1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktTUVESUNJTkUtUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVJFVEFJTC1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVRSQVZFTC1SVSIsCiAgICAgICAgImdlb3NpdGU6R0VOT1RFSy1SVSIsCiAgICAgICAgImdlb3NpdGU6SURFQ08tUlUiLAogICAgICAgICJnZW9zaXRlOk1BSUxSVSIsCiAgICAgICAgImdlb3NpdGU6TUFJTFJVLUdST1VQIiwKICAgICAgICAiZ2Vvc2l0ZTpNVFMtUlUiLAogICAgICAgICJnZW9zaXRlOk1ZT0ZGSUNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpUMi1SVSIsCiAgICAgICAgImdlb3NpdGU6VEJBTkstUlUiCiAgICBdLAogICAgIkRuc0hvc3RzIjogewogICAgICAgICJjbG91ZGZsYXJlLWRucy5jb20iOiAiMS4xLjEuMSIsCiAgICAgICAgImRucy5nb29nbGUiOiAiOC44LjguOCIKICAgIH0sCiAgICAiRG9tYWluU3RyYXRlZ3kiOiAiSVBJZk5vbk1hdGNoIiwKICAgICJEb21lc3RpY0ROU0RvbWFpbiI6ICJodHRwczovL2Rucy5nb29nbGUvZG5zLXF1ZXJ5IiwKICAgICJEb21lc3RpY0ROU0lQIjogIjguOC44LjgiLAogICAgIkRvbWVzdGljRE5TVHlwZSI6ICJEb0giLAogICAgIkZha2VETlMiOiAiZmFsc2UiLAogICAgIkdlb2lwdXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9Mb3lhbHNvbGRpZXIvdjJyYXktcnVsZXMtZGF0L3JlbGVhc2VzL2xhdGVzdC9kb3dubG9hZC9nZW9pcC5kYXQiLAogICAgIkdlb3NpdGV1cmwiOiAiaHR0cHM6Ly9naXRodWIuY29tL0xveWFsc29sZGllci92MnJheS1ydWxlcy1kYXQvcmVsZWFzZXMvbGF0ZXN0L2Rvd25sb2FkL2dlb3NpdGUuZGF0IiwKICAgICJHbG9iYWxQcm94eSI6ICJ0cnVlIiwKICAgICJMYXN0VXBkYXRlZCI6IDE3ODA5MDgxNzcsCiAgICAiTmFtZSI6ICJkaXJlY3QgcnUgd2ViIiwKICAgICJQcm94eUlwIjogWwogICAgXSwKICAgICJQcm94eVNpdGVzIjogWwogICAgXSwKICAgICJSZW1vdGVETlNEb21haW4iOiAiaHR0cHM6Ly9jbG91ZGZsYXJlLWRucy5jb20vZG5zLXF1ZXJ5IiwKICAgICJSZW1vdGVETlNJUCI6ICIxLjEuMS4xIiwKICAgICJSZW1vdGVETlNUeXBlIjogIkRvSCIsCiAgICAiUm91dGVPcmRlciI6ICJibG9jay1kaXJlY3QtcHJveHkiCn0K';
+            const btn = document.getElementById('routing-btn');
+            try {
+                window.open(routingLink, '_blank');
+                btn.innerText = '✅ Открыто!';
+                btn.style.background = '#28a745';
+                setTimeout(function() {
+                    btn.innerText = '🌐 Импорт маршрутизации';
+                    btn.style.background = '#ff9800';
+                }, 3000);
+            } catch (e) {
+                alert('Не удалось открыть ссылку. Скопируйте вручную: ' + routingLink);
+            }
         }
     </script>
 </body>

@@ -13,7 +13,7 @@ from typing import List
 from flask import Flask, jsonify, request, render_template_string, redirect, url_for, session
 
 from app.xui_client import XUIClient
-from app.models import db, Subscription, SyncLog, GlobalSettings, SubscriptionPreset
+from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
 
 # Настройка логирования
@@ -113,6 +113,31 @@ with app.app_context():
                     logger.info("Migration: added expire_at column to subscriptions")
                 except OperationalError as e:
                     logger.warning(f"Migration: expire_at column may already exist: {e}")
+                    db.session.rollback()
+            
+            # Migration: Create config_transform_rules table if not exists
+            if 'config_transform_rules' not in existing_tables:
+                try:
+                    # Manually create table to avoid race conditions with create_all
+                    db.session.execute(text("""
+                        CREATE TABLE IF NOT EXISTS config_transform_rules (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name VARCHAR(100) NOT NULL,
+                            description TEXT,
+                            selector_pattern TEXT NOT NULL,
+                            selector_exclude_pattern TEXT,
+                            transforms_json TEXT NOT NULL DEFAULT '[]',
+                            traffic_limit_gb FLOAT DEFAULT 0,
+                            priority INTEGER DEFAULT 100,
+                            is_active BOOLEAN DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    db.session.commit()
+                    logger.info("Migration: created config_transform_rules table")
+                except OperationalError as e:
+                    logger.warning(f"Migration: config_transform_rules table may already exist: {e}")
                     db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
@@ -270,6 +295,7 @@ def index():
             <a href="/subscriptions">Subscriptions</a>
             <a href="/subscriptions/new">Create Subscription</a>
             <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
             <a href="/settings">Settings</a>
             <a href="/api/health">API Health</a>
             <a href="/logout" style="float:right;">Logout</a>
@@ -386,6 +412,7 @@ def list_subscriptions():
         <div class="nav">
             <a href="/">Dashboard</a>
             <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
             <a href="/subscriptions/new" class="btn">Create New</a>
             <button onclick="syncAll()" class="btn btn-orange" style="padding: 10px 20px; border: none; cursor: pointer; border-radius: 4px;">Sync All</button>
             <a href="/logout" style="float:right;">Logout</a>
@@ -1110,6 +1137,30 @@ def subscription_link(token):
         except Exception:
             logger.exception(f"Failed to collect configs from {panel.config.name}")
     
+    # Collect traffic stats from all panels (needed for transform rules and headers)
+    total_up = 0
+    total_down = 0
+    for panel in xui_client.panels:
+        try:
+            panel.login()
+            traffic = panel.get_client_traffic_by_uuid(sub.uuid, password=sub.ss_password)
+            total_up += traffic.get('upload', 0)
+            total_down += traffic.get('download', 0)
+        except Exception:
+            pass
+    
+    # Apply global config transform rules (before preset filtering)
+    rules = ConfigTransformRule.query.filter_by(is_active=True).order_by(
+        ConfigTransformRule.priority.desc()
+    ).all()
+    if rules:
+        original_count = len(all_uris)
+        all_uris = apply_transform_rules(all_uris, rules, (total_up + total_down) / (1024**3))
+        logger.info(
+            f"Config transform rules applied: {original_count} -> {len(all_uris)} configs "
+            f"(used {(total_up + total_down) / (1024**3):.2f}GB)"
+        )
+    
     # Filter URIs by preset if subscription has a preset assigned
     if sub.preset_id:
         preset = SubscriptionPreset.query.get(sub.preset_id)
@@ -1149,19 +1200,6 @@ def subscription_link(token):
         else:
             expiry_date = sub.created_at + timedelta(days=sub.expiry_days)
             expire_timestamp = int(expiry_date.timestamp())
-    
-    # Collect traffic stats from all panels
-    total_up = 0
-    total_down = 0
-    for panel in xui_client.panels:
-        try:
-            panel.login()
-            # Pass ss_password for Shadowsocks traffic lookup
-            traffic = panel.get_client_traffic_by_uuid(sub.uuid, password=sub.ss_password)
-            total_up += traffic.get('upload', 0)
-            total_down += traffic.get('download', 0)
-        except Exception:
-            pass
     
     def _utf8_header(value: str) -> str:
         """Encode UTF-8 string so it passes through WSGI latin-1 headers.
@@ -1323,6 +1361,206 @@ def _build_vless_uri(host, port, uuid, remark, flow, stream_settings_str):
     name = urllib.parse.quote(remark)
     
     return f"vless://{uuid}@{host}:{port}?{query}#{name}"
+
+
+# ==================== Config Transform Engine ====================
+
+
+
+def parse_vless_uri(uri: str) -> dict:
+    """Parse a vless:// URI into its components.
+
+    Returns dict with keys: uuid, address, port, name, params (dict of query params).
+    Returns None on parse error (graceful — skip, don't crash).
+    """
+    try:
+        if not uri.startswith('vless://'):
+            return None
+
+        rest = uri[8:]  # strip 'vless://'
+
+        # Split off fragment (name)
+        name = ''
+        if '#' in rest:
+            name = urllib.parse.unquote(rest.split('#', 1)[1])
+            rest = rest.split('#', 1)[0]
+
+        # Split off query params
+        params = {}
+        if '?' in rest:
+            qs = rest.split('?', 1)[1]
+            rest = rest.split('?', 1)[0]
+            for k, v in urllib.parse.parse_qsl(qs):
+                params[k] = v
+
+        # rest is uuid@host:port
+        if '@' not in rest:
+            return None
+
+        uuid, hostpart = rest.split('@', 1)
+        address = hostpart
+        port = 443  # default
+
+        if ':' in hostpart:
+            # IPv6: [::1]:port or host:port
+            if hostpart.startswith('['):
+                # IPv6
+                closing = hostpart.find(']')
+                if closing == -1:
+                    return None
+                address = hostpart[1:closing]
+                port_str = hostpart[closing + 2:]  # skip ']:'
+                if port_str:
+                    port = int(port_str)
+            else:
+                address, port_str = hostpart.rsplit(':', 1)
+                try:
+                    port = int(port_str) if port_str else 443
+                except ValueError:
+                    pass
+
+        return {
+            'uuid': uuid,
+            'address': address,
+            'port': port,
+            'name': name,
+            'params': params,
+        }
+    except Exception as e:
+        logger.warning(f"parse_vless_uri: failed to parse '{uri[:80]}...': {e}")
+        return None
+
+
+def build_vless_uri(data: dict) -> str:
+    """Rebuild a vless:// URI from parsed components."""
+    uuid = data.get('uuid', '')
+    address = data.get('address', '127.0.0.1')
+    port = data.get('port', 443)
+    name = data.get('name', '')
+    params = data.get('params', {})
+
+    # Build host part (handle IPv6)
+    if ':' in address and not address.startswith('['):
+        hostpart = f'[{address}]:{port}'
+    else:
+        hostpart = f'{address}:{port}'
+
+    uri = f'vless://{uuid}@{hostpart}'
+
+    # Query params
+    if params:
+        qs = urllib.parse.urlencode(params)
+        uri += f'?{qs}'
+
+    # Fragment (name)
+    if name:
+        uri += f'#{urllib.parse.quote(name)}'
+
+    return uri
+
+
+def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
+    """Apply a list of transforms to a vless:// URI string.
+
+    Each transform is {"field": "...", "value": "..."}.
+    Returns the modified URI string, or the original if parsing fails.
+    """
+    parsed = parse_vless_uri(uri_str)
+    if not parsed:
+        return uri_str  # Graceful — skip unparseable URIs
+
+    for t in transforms:
+        field = t.get('field', '').strip()
+        value = t.get('value', '').strip()
+
+        if not field:
+            continue
+
+        if field == 'address':
+            parsed['address'] = value
+        elif field == 'port':
+            try:
+                parsed['port'] = int(value)
+            except (ValueError, TypeError):
+                pass
+        elif field == 'name':
+            parsed['name'] = value
+        elif field == 'encryption':
+            if value:
+                parsed['params']['encryption'] = value
+            else:
+                parsed['params'].pop('encryption', None)
+        else:
+            # All other fields are query params
+            if value:
+                parsed['params'][field] = value
+            else:
+                parsed['params'].pop(field, None)
+
+    return build_vless_uri(parsed)
+
+
+def apply_transform_rules(
+    uris: list,
+    rules: list,
+    total_used_gb: float,
+) -> list:
+    """Apply config transform rules to a list of vless:// URIs.
+
+    Args:
+        uris: List of vless:// URI strings from panels.
+        rules: List of ConfigTransformRule, should be ordered by priority desc.
+        total_used_gb: Total traffic used by this subscription (GB).
+
+    Returns:
+        Modified list of URI strings (some may be excluded by traffic limits).
+    """
+    seen = set()
+    result = []
+
+    for uri_str in uris:
+        parsed = parse_vless_uri(uri_str)
+        if not parsed:
+            # Unparseable — keep as-is but deduplicate
+            if uri_str not in seen:
+                seen.add(uri_str)
+                result.append(uri_str)
+            continue
+
+        config_name = parsed.get('name', '')
+        current_uri = uri_str
+        excluded = False
+
+        for rule in rules:
+            if not rule.is_active:
+                continue
+
+            # Check selector match
+            if not rule.matches_config(config_name):
+                continue
+
+            # Check traffic limit
+            traffic_limit = rule.traffic_limit_gb or 0
+            if traffic_limit > 0 and total_used_gb >= traffic_limit:
+                # Exclude this config entirely
+                logger.info(
+                    f"Config '{config_name}' excluded by rule '{rule.name}' "
+                    f"(used {total_used_gb:.2f}GB >= limit {traffic_limit}GB)"
+                )
+                excluded = True
+                break
+
+            # Apply transforms
+            transforms = rule.get_transforms()
+            if transforms:
+                current_uri = apply_transforms_to_uri(current_uri, transforms)
+                logger.debug(f"Rule '{rule.name}' transformed config '{config_name}'")
+
+        if not excluded and current_uri not in seen:
+            seen.add(current_uri)
+            result.append(current_uri)
+
+    return result
 
 
 RUSSIAN_SERVICES_RULES = [
@@ -1919,6 +2157,7 @@ def global_settings():
             <a href="/">Dashboard</a>
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>
         
@@ -2184,6 +2423,7 @@ def presets_ui():
             <a href="/">Dashboard</a>
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
             <a href="/settings">Settings</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>
@@ -2469,6 +2709,497 @@ def delete_preset(preset_id):
     return jsonify({
         'success': True,
         'message': f'Preset {preset_id} ({preset.name}) deleted'
+    })
+
+
+# ==================== Config Transform Rules (Web UI) ====================
+
+@app.route('/config-transforms')
+@require_auth
+def list_config_transforms():
+    """Список правил трансформации конфигов."""
+    rules = ConfigTransformRule.query.order_by(
+        ConfigTransformRule.priority.desc(),
+        ConfigTransformRule.created_at.desc()
+    ).all()
+
+    rows = ""
+    for rule in rules:
+        status_badge = '<span style="color: green;">Active</span>' if rule.is_active else '<span style="color: gray;">Inactive</span>'
+        traffic_info = f"{rule.traffic_limit_gb} GB" if rule.traffic_limit_gb else "No limit"
+        transforms_count = len(rule.get_transforms())
+
+        rows += f"""
+        <tr>
+            <td>{rule.id}</td>
+            <td><strong>{rule.name}</strong></td>
+            <td><code>{rule.selector_pattern}</code></td>
+            <td><code>{rule.selector_exclude_pattern or '-'}</code></td>
+            <td>{transforms_count}</td>
+            <td>{rule.priority}</td>
+            <td>{traffic_info}</td>
+            <td>{status_badge}</td>
+            <td>
+                <a href="/config-transforms/{rule.id}/edit">Edit</a>
+                <form method="POST" action="/config-transforms/{rule.id}/delete" style="display:inline;">
+                    <button type="submit" onclick="return confirm('Delete rule?')">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    return render_template_string(f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Config Transforms - 3x-controller</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }}
+        th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+        th {{ background-color: #f5f5f5; }}
+        .nav {{ margin: 20px 0; }}
+        .nav a {{ margin-right: 20px; text-decoration: none; color: #007bff; }}
+        .btn {{ padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; }}
+        code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }}
+    </style>
+    </head>
+    <body>
+        <h1>Config Transform Rules</h1>
+        <p style="color: #666;">Global rules that modify vless:// URIs in subscriptions by config name matching.</p>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/subscriptions">Subscriptions</a>
+            <a href="/presets">Presets</a>
+            <a href="/settings">Settings</a>
+            <a href="/config-transforms/new" class="btn">Create New Rule</a>
+            <a href="/logout" style="float:right;">Logout</a>
+        </div>
+        <table>
+            <tr>
+                <th>ID</th><th>Name</th><th>Selector</th><th>Exclude</th>
+                <th>Transforms</th><th>Priority</th><th>Traffic Limit</th><th>Status</th><th>Actions</th>
+            </tr>
+            {rows}
+        </table>
+    </body>
+    </html>
+    """)
+
+
+@app.route('/config-transforms/new', methods=['GET', 'POST'])
+@require_auth
+def create_config_transform():
+    """Создание нового правила трансформации."""
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            return "Name is required", 400
+
+        selector_pattern = request.form.get('selector_pattern', '').strip()
+        if not selector_pattern:
+            return "Selector pattern is required", 400
+
+        # Build transforms from form fields (dynamic rows)
+        transforms = []
+        fields = request.form.getlist('transform_field[]')
+        values = request.form.getlist('transform_value[]')
+        for f, v in zip(fields, values):
+            f = f.strip()
+            v = v.strip()
+            if f and v:
+                transforms.append({'field': f, 'value': v})
+
+        rule = ConfigTransformRule(
+            name=name,
+            description=request.form.get('description', '').strip(),
+            selector_pattern=selector_pattern,
+            selector_exclude_pattern=request.form.get('selector_exclude_pattern', '').strip() or None,
+            traffic_limit_gb=float(request.form.get('traffic_limit_gb', 0) or 0),
+            priority=int(request.form.get('priority', 100) or 100),
+            is_active=request.form.get('is_active') == 'on',
+        )
+        rule.set_transforms(transforms)
+
+        db.session.add(rule)
+        db.session.commit()
+
+        logger.info(f"Created config transform rule: {rule.name}")
+        return redirect(url_for('list_config_transforms'))
+
+    # Build field options for the dropdown
+    field_options = ''.join(
+        f'<option value="{f}">{TRANSFORM_FIELD_LABELS.get(f, f)}</option>'
+        for f in TRANSFORM_FIELDS
+    )
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Create Config Transform - 3x-controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; max-width: 700px; }
+        .form-group { margin: 15px 0; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, select, textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        textarea { min-height: 60px; }
+        .checkbox { width: auto; }
+        button { padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .nav { margin-bottom: 20px; }
+        .nav a { text-decoration: none; color: #007bff; }
+        .help { font-size: 12px; color: #666; margin-top: 4px; }
+        .transform-row { display: flex; gap: 10px; margin: 8px 0; align-items: center; }
+        .transform-row select { width: 220px; flex-shrink: 0; }
+        .transform-row input { flex: 1; }
+        .transform-row .btn-remove { background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 8px 12px; flex-shrink: 0; }
+        .btn-add { background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 8px 16px; margin-top: 5px; }
+    </style>
+    </head>
+    <body>
+        <div class="nav"><a href="/config-transforms">&larr; Back to list</a></div>
+        <h1>Create Config Transform Rule</h1>
+        <form method="POST">
+            <div class="form-group">
+                <label>Rule Name *</label>
+                <input type="text" name="name" required placeholder="e.g. CDN Bypass for ALPHA configs">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description" placeholder="Optional description of what this rule does"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Selector Pattern *</label>
+                <input type="text" name="selector_pattern" required placeholder="e.g. 🇳🇱, ALPHA (comma-separated, match ANY)">
+                <div class="help">Config name must contain at least one of these substrings (case-insensitive)</div>
+            </div>
+            <div class="form-group">
+                <label>Exclude Pattern (optional)</label>
+                <input type="text" name="selector_exclude_pattern" placeholder="e.g. EXPIRED, DISABLED">
+                <div class="help">Configs matching this pattern are NOT affected</div>
+            </div>
+            <div class="form-group">
+                <label>Priority</label>
+                <input type="number" name="priority" value="100">
+                <div class="help">Higher priority rules are applied first. Default: 100</div>
+            </div>
+            <div class="form-group">
+                <label>Traffic Limit (GB, 0 = no limit)</label>
+                <input type="number" name="traffic_limit_gb" value="0" min="0" step="0.1">
+                <div class="help">If subscriber's used traffic >= limit, matching configs are EXCLUDED from subscription</div>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="is_active" class="checkbox" checked> Active
+                </label>
+            </div>
+            <div class="form-group">
+                <label>Transforms</label>
+                <div class="help">Fields to modify in matching vless:// URIs. Applied in order.</div>
+                <div id="transforms-container">
+                    <div class="transform-row">
+                        <select name="transform_field[]">
+                            {{ field_options|safe }}
+                        </select>
+                        <input type="text" name="transform_value[]" placeholder="New value">
+                        <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
+                    </div>
+                </div>
+                <button type="button" class="btn-add" onclick="addTransformRow()">+ Add Field</button>
+            </div>
+            <button type="submit">Create Rule</button>
+        </form>
+        <script>
+        function addTransformRow() {
+            const container = document.getElementById('transforms-container');
+            const row = document.createElement('div');
+            row.className = 'transform-row';
+            row.innerHTML = `
+                <select name="transform_field[]">{{ field_options|safe }}</select>
+                <input type="text" name="transform_value[]" placeholder="New value">
+                <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
+            `;
+            container.appendChild(row);
+        }
+        </script>
+    </body>
+    </html>
+    """, field_options=field_options)
+
+
+@app.route('/config-transforms/<int:rule_id>/edit', methods=['GET', 'POST'])
+@require_auth
+def edit_config_transform(rule_id):
+    """Редактирование правила трансформации."""
+
+    rule = ConfigTransformRule.query.get_or_404(rule_id)
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        if not name:
+            return "Name is required", 400
+
+        selector_pattern = request.form.get('selector_pattern', '').strip()
+        if not selector_pattern:
+            return "Selector pattern is required", 400
+
+        transforms = []
+        fields = request.form.getlist('transform_field[]')
+        values = request.form.getlist('transform_value[]')
+        for f, v in zip(fields, values):
+            f = f.strip()
+            v = v.strip()
+            if f and v:
+                transforms.append({'field': f, 'value': v})
+
+        rule.name = name
+        rule.description = request.form.get('description', '').strip()
+        rule.selector_pattern = selector_pattern
+        rule.selector_exclude_pattern = request.form.get('selector_exclude_pattern', '').strip() or None
+        rule.traffic_limit_gb = float(request.form.get('traffic_limit_gb', 0) or 0)
+        rule.priority = int(request.form.get('priority', 100) or 100)
+        rule.is_active = request.form.get('is_active') == 'on'
+        rule.set_transforms(transforms)
+
+        db.session.commit()
+        logger.info(f"Updated config transform rule: {rule.name}")
+        return redirect(url_for('list_config_transforms'))
+
+    # GET — render form with existing values
+    field_options = ''.join(
+        f'<option value="{f}">{TRANSFORM_FIELD_LABELS.get(f, f)}</option>'
+        for f in TRANSFORM_FIELDS
+    )
+
+    # Build transform rows
+    existing_transforms = rule.get_transforms()
+    transform_rows_html = ""
+    if existing_transforms:
+        for t in existing_transforms:
+            transform_rows_html += f"""
+            <div class="transform-row">
+                <select name="transform_field[]">{field_options}</select>
+                <input type="text" name="transform_value[]" value="{t.get('value', '')}">
+                <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
+            </div>
+            """
+    else:
+        transform_rows_html = """
+        <div class="transform-row">
+            <select name="transform_field[]">{field_options}</select>
+            <input type="text" name="transform_value[]" placeholder="New value">
+            <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
+        </div>
+        """.format(field_options=field_options)
+
+    checked = 'checked' if rule.is_active else ''
+    active_bool = 'true' if rule.is_active else 'false'
+
+    return render_template_string(f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Edit Config Transform - 3x-controller</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; max-width: 700px; }}
+        .form-group {{ margin: 15px 0; }}
+        label {{ display: block; margin-bottom: 5px; font-weight: bold; }}
+        input, select, textarea {{ width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }}
+        textarea {{ min-height: 60px; }}
+        .checkbox {{ width: auto; }}
+        button {{ padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }}
+        .nav {{ margin-bottom: 20px; }}
+        .nav a {{ text-decoration: none; color: #007bff; }}
+        .help {{ font-size: 12px; color: #666; margin-top: 4px; }}
+        .transform-row {{ display: flex; gap: 10px; margin: 8px 0; align-items: center; }}
+        .transform-row select {{ width: 220px; flex-shrink: 0; }}
+        .transform-row input {{ flex: 1; }}
+        .transform-row .btn-remove {{ background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 8px 12px; flex-shrink: 0; }}
+        .btn-add {{ background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 8px 16px; margin-top: 5px; }}
+    </style>
+    </head>
+    <body>
+        <div class="nav"><a href="/config-transforms">&larr; Back to list</a></div>
+        <h1>Edit Rule: {rule.name}</h1>
+        <form method="POST">
+            <div class="form-group">
+                <label>Rule Name *</label>
+                <input type="text" name="name" value="{rule.name}" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description">{rule.description or ''}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Selector Pattern *</label>
+                <input type="text" name="selector_pattern" value="{rule.selector_pattern}" required>
+                <div class="help">Config name must contain at least one of these substrings (comma-separated, case-insensitive)</div>
+            </div>
+            <div class="form-group">
+                <label>Exclude Pattern (optional)</label>
+                <input type="text" name="selector_exclude_pattern" value="{rule.selector_exclude_pattern or ''}">
+            </div>
+            <div class="form-group">
+                <label>Priority</label>
+                <input type="number" name="priority" value="{rule.priority}">
+                <div class="help">Higher priority rules are applied first</div>
+            </div>
+            <div class="form-group">
+                <label>Traffic Limit (GB, 0 = no limit)</label>
+                <input type="number" name="traffic_limit_gb" value="{rule.traffic_limit_gb}" min="0" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="is_active" class="checkbox" {checked}> Active
+                </label>
+            </div>
+            <div class="form-group">
+                <label>Transforms</label>
+                <div id="transforms-container">
+                    {transform_rows_html}
+                </div>
+                <button type="button" class="btn-add" onclick="addTransformRow()">+ Add Field</button>
+            </div>
+            <button type="submit">Update Rule</button>
+        </form>
+        <script>
+        function addTransformRow() {{
+            const container = document.getElementById('transforms-container');
+            const row = document.createElement('div');
+            row.className = 'transform-row';
+            row.innerHTML = `
+                <select name="transform_field[]">{field_options}</select>
+                <input type="text" name="transform_value[]" placeholder="New value">
+                <button type="button" class="btn-remove" onclick="this.parentElement.remove()">&times;</button>
+            `;
+            container.appendChild(row);
+        }}
+        </script>
+    </body>
+    </html>
+    """, field_options=field_options, checked=checked, transform_rows_html=transform_rows_html)
+
+
+@app.route('/config-transforms/<int:rule_id>/delete', methods=['POST'])
+@require_auth
+def delete_config_transform(rule_id):
+    """Удаление правила трансформации."""
+    rule = ConfigTransformRule.query.get_or_404(rule_id)
+    name = rule.name
+    db.session.delete(rule)
+    db.session.commit()
+    logger.info(f"Deleted config transform rule: {name}")
+    return redirect(url_for('list_config_transforms'))
+
+
+# ==================== Config Transform Rules (REST API) ====================
+
+@app.route('/api/config-transforms', methods=['GET'])
+@require_auth
+def list_config_transforms_api():
+    """List all config transform rules."""
+    rules = ConfigTransformRule.query.order_by(
+        ConfigTransformRule.priority.desc(),
+        ConfigTransformRule.created_at.desc()
+    ).all()
+    return jsonify({
+        'success': True,
+        'count': len(rules),
+        'rules': [r.to_dict() for r in rules]
+    })
+
+
+@app.route('/api/config-transforms', methods=['POST'])
+@require_auth
+def create_config_transform_api():
+    """Create a new config transform rule."""
+    data = request.get_json() or {}
+
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+
+    selector_pattern = data.get('selector_pattern', '').strip()
+    if not selector_pattern:
+        return jsonify({'error': 'selector_pattern is required'}), 400
+
+    transforms = data.get('transforms', [])
+    if not isinstance(transforms, list):
+        transforms = []
+
+    rule = ConfigTransformRule(
+        name=name,
+        description=data.get('description', '').strip() or None,
+        selector_pattern=selector_pattern,
+        selector_exclude_pattern=data.get('selector_exclude_pattern', '').strip() or None,
+        traffic_limit_gb=float(data.get('traffic_limit_gb', 0) or 0),
+        priority=int(data.get('priority', 100) or 100),
+        is_active=bool(data.get('is_active', True)),
+    )
+    rule.set_transforms(transforms)
+
+    db.session.add(rule)
+    db.session.commit()
+
+    logger.info(f"Created config transform rule via API: {rule.name}")
+    return jsonify({'success': True, 'rule': rule.to_dict()}), 201
+
+
+@app.route('/api/config-transforms/<int:rule_id>', methods=['GET'])
+@require_auth
+def get_config_transform(rule_id):
+    """Get a single config transform rule."""
+    rule = ConfigTransformRule.query.get_or_404(rule_id)
+    return jsonify({'success': True, 'rule': rule.to_dict()})
+
+
+@app.route('/api/config-transforms/<int:rule_id>', methods=['PUT'])
+@require_auth
+def update_config_transform(rule_id):
+    """Update a config transform rule."""
+    rule = ConfigTransformRule.query.get_or_404(rule_id)
+    data = request.get_json() or {}
+
+    if 'name' in data:
+        name = data['name'].strip()
+        if not name:
+            return jsonify({'error': 'name cannot be empty'}), 400
+        rule.name = name
+
+    if 'description' in data:
+        rule.description = data.get('description', '').strip() or None
+    if 'selector_pattern' in data:
+        sp = data['selector_pattern'].strip()
+        if not sp:
+            return jsonify({'error': 'selector_pattern cannot be empty'}), 400
+        rule.selector_pattern = sp
+    if 'selector_exclude_pattern' in data:
+        rule.selector_exclude_pattern = data.get('selector_exclude_pattern', '').strip() or None
+    if 'traffic_limit_gb' in data:
+        rule.traffic_limit_gb = float(data['traffic_limit_gb'] or 0)
+    if 'priority' in data:
+        rule.priority = int(data['priority'] or 100)
+    if 'is_active' in data:
+        rule.is_active = bool(data['is_active'])
+    if 'transforms' in data:
+        if isinstance(data['transforms'], list):
+            rule.set_transforms(data['transforms'])
+
+    db.session.commit()
+    logger.info(f"Updated config transform rule via API: {rule.name}")
+    return jsonify({'success': True, 'rule': rule.to_dict()})
+
+
+@app.route('/api/config-transforms/<int:rule_id>', methods=['DELETE'])
+@require_auth
+def delete_config_transform_api(rule_id):
+    """Delete a config transform rule."""
+    rule = ConfigTransformRule.query.get_or_404(rule_id)
+    name = rule.name
+    db.session.delete(rule)
+    db.session.commit()
+    logger.info(f"Deleted config transform rule via API: {name}")
+    return jsonify({
+        'success': True,
+        'message': f'Config transform rule {rule_id} ({name}) deleted'
     })
 
 

@@ -1169,10 +1169,19 @@ def subscription_link(token):
     ).all()
     if rules:
         original_count = len(all_uris)
+        # DEBUG: log first URI before transform
+        if all_uris:
+            logger.info(f"DEBUG: BEFORE transform — first URI: {all_uris[0][:200]}")
+        logger.info(f"DEBUG: rules found: {[r.name for r in rules]}")
+        for r in rules:
+            logger.info(f"DEBUG: rule '{r.name}' transforms_json: {r.transforms_json[:300]}")
         all_uris = apply_transform_rules(
             all_uris, rules,
             total_used_map={u: config_traffic.get(u, 0) / (1024**3) for u in all_uris}
         )
+        # DEBUG: log first URI after transform
+        if all_uris:
+            logger.info(f"DEBUG: AFTER transform — first URI: {all_uris[0][:200]}")
         logger.info(
             f"Config transform rules applied: {original_count} -> {len(all_uris)} configs"
         )
@@ -1491,6 +1500,8 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
 
         if not field:
             continue
+
+        logger.debug(f"TRANSFORM: applying field='{field}' value='{value}' to uri='{parsed.get('name', '')[:40]}'")
 
         if field == 'address':
             parsed['address'] = value

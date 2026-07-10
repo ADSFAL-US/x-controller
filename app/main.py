@@ -1488,8 +1488,19 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
     """Apply a list of transforms to a vless:// URI string.
 
     Each transform is {"field": "...", "value": "..."}.
+    For xHTTP-specific fields (sc*, xPadding*, uplink*), injects into the
+    `extra` JSON object that Happ reads. All other fields set as flat query params.
     Returns the modified URI string, or the original if parsing fails.
     """
+    # Fields that belong inside the `extra` JSON (Happ expects them there)
+    xhttp_extra_fields = {
+        'scMaxConcurrentPosts', 'scMaxEachPostBytes',
+        'scMinPostsIntervalMs', 'scMaxBufferedPosts',
+        'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
+        'xPaddingMethod', 'xPaddingObfsMode',
+        'uplinkHTTPMethod',
+    }
+
     parsed = parse_vless_uri(uri_str)
     if not parsed:
         return uri_str  # Graceful — skip unparseable URIs
@@ -1517,8 +1528,33 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
                 parsed['params']['encryption'] = value
             else:
                 parsed['params'].pop('encryption', None)
+        elif field in xhttp_extra_fields:
+            # Inject into the `extra` JSON that Happ parses
+            # Remove flat param if it was added
+            parsed['params'].pop(field, None)
+            # Parse existing extra JSON
+            extra_str = parsed['params'].get('extra', '{}')
+            try:
+                extra = json.loads(extra_str) if isinstance(extra_str, str) else {}
+            except (json.JSONDecodeError, TypeError):
+                extra = {}
+            if value:
+                # Try to preserve type — int or bool if applicable
+                try:
+                    if '.' in value:
+                        extra[field] = float(value)
+                    else:
+                        extra[field] = int(value)
+                except (ValueError, TypeError):
+                    if value.lower() in ('true', 'false'):
+                        extra[field] = value.lower() == 'true'
+                    else:
+                        extra[field] = value
+            else:
+                extra.pop(field, None)
+            parsed['params']['extra'] = json.dumps(extra, ensure_ascii=False)
         else:
-            # All other fields are query params
+            # All other fields are flat query params
             if value:
                 parsed['params'][field] = value
             else:

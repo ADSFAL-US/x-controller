@@ -3009,26 +3009,32 @@ def edit_config_transform(rule_id):
         for f in TRANSFORM_FIELDS
     )
 
-    # Build transform rows
+    # Build transform rows with correct selected option
     existing_transforms = rule.get_transforms()
     transform_rows_html = ""
     if existing_transforms:
         for t in existing_transforms:
+            tf = t.get('field', '')
+            # Build options with correct selected attribute
+            row_options = ''
+            for f in TRANSFORM_FIELDS:
+                selected = 'selected' if f == tf else ''
+                row_options += f'<option value="{f}" {selected}>{TRANSFORM_FIELD_LABELS.get(f, f)}</option>'
             transform_rows_html += f"""
             <div class="transform-row">
-                <select name="transform_field[]">{field_options}</select>
+                <select name="transform_field[]">{row_options}</select>
                 <input type="text" name="transform_value[]" value="{t.get('value', '')}">
                 <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
             </div>
             """
     else:
-        transform_rows_html = """
+        transform_rows_html = f"""
         <div class="transform-row">
             <select name="transform_field[]">{field_options}</select>
             <input type="text" name="transform_value[]" placeholder="New value">
             <button type="button" class="btn-remove" onclick="this.parentElement.remove()">×</button>
         </div>
-        """.format(field_options=field_options)
+        """
 
     checked = 'checked' if rule.is_active else ''
     active_bool = 'true' if rule.is_active else 'false'

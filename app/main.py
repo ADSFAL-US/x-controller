@@ -1488,14 +1488,14 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
     """Apply a list of transforms to a vless:// URI string.
 
     Each transform is {"field": "...", "value": "..."}.
-    For xHTTP-specific fields (sc*, xPadding*, uplink*), injects into the
-    `extra` JSON object that Happ reads. All other fields set as flat query params.
+    For xHTTP fields:
+      - sc* params → set as flat query params (Happ reads them from xhttpSettings level)
+      - xPadding* / uplink* → inject into `extra` JSON (Happ reads them from extra)
+    All other fields set as flat query params.
     Returns the modified URI string, or the original if parsing fails.
     """
-    # Fields that belong inside the `extra` JSON (Happ expects them there)
+    # Fields that go into the `extra` JSON object (xPadding*, uplink*)
     xhttp_extra_fields = {
-        'scMaxConcurrentPosts', 'scMaxEachPostBytes',
-        'scMinPostsIntervalMs', 'scMaxBufferedPosts',
         'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
         'xPaddingMethod', 'xPaddingObfsMode',
         'uplinkHTTPMethod',
@@ -1529,17 +1529,14 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
             else:
                 parsed['params'].pop('encryption', None)
         elif field in xhttp_extra_fields:
-            # Inject into the `extra` JSON that Happ parses
-            # Remove flat param if it was added
+            # Inject into the `extra` JSON (xPadding*, uplink*)
             parsed['params'].pop(field, None)
-            # Parse existing extra JSON
             extra_str = parsed['params'].get('extra', '{}')
             try:
                 extra = json.loads(extra_str) if isinstance(extra_str, str) else {}
             except (json.JSONDecodeError, TypeError):
                 extra = {}
             if value:
-                # Try to preserve type — int or bool if applicable
                 try:
                     if '.' in value:
                         extra[field] = float(value)
@@ -1554,7 +1551,7 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
                 extra.pop(field, None)
             parsed['params']['extra'] = json.dumps(extra, ensure_ascii=False)
         else:
-            # All other fields are flat query params
+            # All other fields (sc*, mode, host, path, etc.) → flat query params
             if value:
                 parsed['params'][field] = value
             else:

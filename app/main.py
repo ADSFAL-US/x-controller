@@ -1494,8 +1494,10 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
     All other fields set as flat query params.
     Returns the modified URI string, or the original if parsing fails.
     """
-    # Fields that go into the `extra` JSON object (xPadding*, uplink*)
+    # Fields that go into the `extra` JSON object (all xHTTP fields)
     xhttp_extra_fields = {
+        'scMaxConcurrentPosts', 'scMaxEachPostBytes',
+        'scMinPostsIntervalMs', 'scMaxBufferedPosts',
         'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
         'xPaddingMethod', 'xPaddingObfsMode',
         'uplinkHTTPMethod',
@@ -1781,384 +1783,972 @@ def _build_clash_yaml(proxies: List[dict], custom_rules: str = '') -> str:
 
 SUBSCRIPTION_GUIDE_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Подписка VPN - {{ email }}</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; background: #1a1a2e; color: #eee; line-height: 1.6; }
-        h1 { color: #00d4ff; margin-bottom: 10px; }
-        h2 { color: #00d4ff; margin-top: 30px; border-bottom: 2px solid #00d4ff; padding-bottom: 10px; }
-        h3 { color: #00d4ff; margin-top: 20px; }
-        .card { background: #16213e; border-radius: 12px; padding: 20px; margin: 15px 0; }
-        .link { background: #0f3460; padding: 15px; border-radius: 8px; word-break: break-all; font-family: monospace; font-size: 14px; border: 1px solid #00d4ff; }
-        button { background: #00d4ff; color: #1a1a2e; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; }
-        button:hover { background: #33ddff; }
-        .btn-success { background: #28a745; color: white; }
-        .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
-        .tab { background: #0f3460; padding: 10px 20px; border-radius: 20px; cursor: pointer; border: 2px solid transparent; }
-        .tab:hover { background: #1a4a7a; }
-        .tab.active { border-color: #00d4ff; background: #00d4ff; color: #1a1a2e; font-weight: bold; }
-        .platform-content { display: none; }
-        .platform-content.active { display: block; }
-        .step { display: flex; align-items: flex-start; margin: 15px 0; }
-        .step-num { background: #00d4ff; color: #1a1a2e; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 12px; flex-shrink: 0; margin-top: 2px; }
-        .step-content { flex: 1; }
-        .note { background: #2d4a6a; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #00d4ff; margin: 15px 0; }
-        .warning { background: #5a4a2a; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #ffc107; margin: 15px 0; }
-        a { color: #00d4ff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .recommendation { color: #ffc107; font-weight: bold; }
-        ul { margin: 10px 0; padding-left: 25px; }
-        li { margin: 8px 0; }
-        .header-info { font-size: 14px; color: #aaa; margin-bottom: 20px; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avava VPN — Подписка</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  background: #0a0800;
+  color: #c4b698;
+  min-height: 100vh;
+  line-height: 1.5;
+}
+.container { max-width: 840px; margin: 0 auto; padding: 24px 16px 60px; }
+
+/* ── Header ── */
+.header {
+  border: 2px solid #fbbf24;
+  padding: 28px 24px;
+  margin-bottom: 24px;
+  background: #0a0800;
+}
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.logo {
+  font-size: 28px;
+  font-weight: 800;
+  color: #fbbf24;
+  letter-spacing: 1px;
+}
+.logo-sub {
+  font-size: 12px;
+  color: #5a4a2a;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+.header-right { text-align: right; }
+.user-badge {
+  border: 1px solid rgba(251,191,36,0.2);
+  padding: 3px 12px;
+  font-size: 12px;
+  color: #8a7a5a;
+  letter-spacing: 0.5px;
+}
+.header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 16px;
+  letter-spacing: 0.3px;
+}
+.header p {
+  color: #6a5a3a;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+/* ── Import Section ── */
+.import-section {
+  border: 2px solid #fbbf24;
+  padding: 24px;
+  margin-bottom: 24px;
+  background: #0d0a00;
+}
+.import-section h2 {
+  font-size: 13px;
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(251,191,36,0.12);
+}
+
+.client-row {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.client-row button {
+  padding: 8px 14px;
+  border: 1px solid rgba(251,191,36,0.12);
+  background: transparent;
+  color: #6a5a3a;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+.client-row button.active {
+  border-color: #fbbf24;
+  background: #fbbf24;
+  color: #0a0800;
+}
+
+.import-actions {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.import-actions .btn-main {
+  flex: 2;
+  min-width: 0;
+  padding: 14px 20px;
+  border: 2px solid #fbbf24;
+  background: transparent;
+  color: #fbbf24;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.import-actions .btn-main .tag {
+  font-size: 10px;
+  border: 1px solid currentColor;
+  padding: 1px 8px;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+.import-actions .btn-copy {
+  flex: 0 0 auto;
+  padding: 14px 20px;
+  border: 2px solid rgba(251,191,36,0.15);
+  background: transparent;
+  color: #6a5a3a;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.sub-url-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(251,191,36,0.08);
+  padding: 8px 12px;
+}
+.sub-url-line code {
+  flex: 1;
+  font-size: 11px;
+  color: #4a3a1a;
+  word-break: break-all;
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+}
+.sub-url-line button {
+  background: none;
+  border: 1px solid rgba(251,191,36,0.12);
+  color: #5a4a2a;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* ── Routing Row ── */
+.routing-row {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(251,191,36,0.08);
+}
+.routing-row .routing-label {
+  font-size: 11px;
+  color: #5a4a2a;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 8px 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+.routing-row .btn-routing {
+  padding: 8px 16px;
+  border: 1px solid rgba(251,191,36,0.12);
+  background: transparent;
+  color: #6a5a3a;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.routing-row .btn-routing .key {
+  color: #8a7a5a;
+  font-size: 10px;
+  border: 1px solid rgba(251,191,36,0.08);
+  padding: 0 6px;
+}
+
+/* ── Platform Tabs ── */
+.platform-section { margin-top: 24px; }
+.platform-tabs {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.platform-tab {
+  padding: 8px 16px;
+  border: 1px solid rgba(251,191,36,0.08);
+  background: transparent;
+  color: #4a3a1a;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+.platform-tab.active {
+  border-color: #fbbf24;
+  background: #fbbf24;
+  color: #0a0800;
+}
+.platform-content { display: none; }
+.platform-content.active { display: block; }
+
+/* ── Platform Card ── */
+.platform-card {
+  border: 2px solid rgba(251,191,36,0.12);
+  border-top: none;
+  padding: 24px;
+  background: #0d0a00;
+  overflow: hidden;
+}
+.platform-card h3 {
+  font-size: 15px;
+  color: #fbbf24;
+  letter-spacing: 1px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(251,191,36,0.08);
+  font-weight: 600;
+}
+
+.step {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,0.02);
+}
+.step:hover { border-color: rgba(251,191,36,0.06); }
+.step-num {
+  width: 26px; height: 26px;
+  min-width: 26px;
+  border: 1px solid rgba(251,191,36,0.2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+  color: #8a7a5a;
+}
+.step-content { flex: 1; min-width: 0; }
+.step-content strong {
+  color: #e8d5b0;
+  display: block;
+  margin-bottom: 3px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.step-content div, .step-content p { color: #8a7a5a; font-size: 13px; }
+.step-content code {
+  background: rgba(251,191,36,0.03);
+  padding: 1px 7px;
+  font-size: 12px;
+  color: #c4b698;
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  border: 1px solid rgba(251,191,36,0.06);
+}
+.step-content a {
+  color: #fbbf24;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(251,191,36,0.15);
+}
+.step-content a:hover { border-bottom-color: #fbbf24; }
+.step-content .hl { color: #fbbf24; font-weight: 600; }
+
+.note, .warning {
+  padding: 12px 16px;
+  margin: 14px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  border-left: 2px solid;
+}
+.note {
+  border-color: rgba(251,191,36,0.2);
+  background: rgba(251,191,36,0.02);
+  color: #8a7a5a;
+}
+.note strong { color: #c4b698; }
+.warning {
+  border-color: #fbbf24;
+  background: rgba(245,158,11,0.04);
+  color: #a68b5b;
+}
+.warning strong { color: #fbbf24; }
+
+.dl-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border: 1px solid rgba(251,191,36,0.15);
+  color: #8a7a5a !important;
+  font-size: 12px;
+  text-decoration: none !important;
+  letter-spacing: 0.5px;
+  margin-top: 6px;
+  font-family: inherit;
+}
+.dl-link:hover {
+  border-color: #fbbf24;
+  color: #fbbf24 !important;
+}
+
+/* ── Entrance: hidden from the start — set via JS, not CSS ── */
+[data-step] {
+  opacity: 0;
+  transform: translateY(16px);
+}
+
+.footer {
+  text-align: center;
+  margin-top: 40px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(251,191,36,0.06);
+}
+.footer p { color: #3d2d12; font-size: 12px; letter-spacing: 0.5px; }
+.footer a { color: #8a7a5a; text-decoration: none; border-bottom: 1px solid rgba(251,191,36,0.1); }
+.footer a:hover { color: #fbbf24; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .container { padding: 12px 10px 40px; }
+  .header { padding: 20px 16px; }
+  .header-top { flex-direction: column; align-items: flex-start; }
+  .header-right { text-align: left; width: 100%; }
+  .logo { font-size: 22px; }
+  .header h1 { font-size: 15px; }
+  .import-section { padding: 16px; }
+  .client-row button { padding: 6px 10px; font-size: 11px; }
+  .import-actions { flex-direction: column; }
+  .import-actions .btn-main { min-width: 0; white-space: normal; padding: 12px 16px; font-size: 13px; }
+  .import-actions .btn-copy { text-align: center; }
+  .sub-url-line { flex-direction: column; align-items: stretch; }
+  .sub-url-line code { font-size: 10px; }
+  .routing-row .routing-label { width: 100%; }
+  .routing-row .btn-routing { flex: 1; justify-content: center; }
+  .platform-tab { padding: 6px 12px; font-size: 11px; }
+  .platform-card { padding: 16px; }
+  .step { padding: 10px 12px; flex-direction: column; gap: 6px; }
+  .step-num { width: 22px; height: 22px; min-width: 22px; font-size: 10px; }
+}
+</style>
 </head>
 <body>
-    <h1>📡 Подписка VPN</h1>
-    <p class="header-info"><strong>Пользователь:</strong> {{ email }}</p>
-    
-    <div class="card">
-        <h3>🔗 Ваша ссылка подписки:</h3>
-        <div class="link" id="sub-link">{{ sub_url }}</div>
-        <br>
-        <button id="copy-btn" onclick="copyLink()">📋 Копировать ссылку</button>
-        <button id="routing-btn" onclick="importRouting()" style="background: #ff9800; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; margin-left: 10px;">🌐 Импорт маршрутизации</button>
-        <p style="font-size: 12px; color: #888; margin-top: 10px;">Нажмите кнопку, чтобы скопировать ссылку для импорта в клиент. Кнопка "Импорт маршрутизации" — для Happ: все .ru/.su и российские сайты пойдут напрямую, в обход VPN.</p>
+<div class="container">
+
+  <!-- ─── Header ─── -->
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <div class="logo">AVAVA VPN</div>
+        <div class="logo-sub">─ безопасный доступ ─</div>
+      </div>
+      <div class="header-right">
+        <div class="user-badge">▸ {{ email }}</div>
+      </div>
     </div>
-    
-    <h2>📱 Выберите платформу</h2>
-    <div class="tabs">
-        <div class="tab active" onclick="showPlatform('android')">Android</div>
-        <div class="tab" onclick="showPlatform('ios')">iOS</div>
-        <div class="tab" onclick="showPlatform('windows')">Windows</div>
-        <div class="tab" onclick="showPlatform('macos')">macOS</div>
-        <div class="tab" onclick="showPlatform('linux')">Linux</div>
-        <div class="tab" onclick="showPlatform('openwrt')">OpenWRT</div>
+    <h1>║ Подписка готова к подключению</h1>
+    <p>Выберите клиент и нажмите кнопку импорта</p>
+  </div>
+
+  <!-- ─── Quick Import ─── -->
+  <div class="import-section">
+    <h2>■ импорт в один клик</h2>
+
+    <div class="client-row" id="clientRow">
+      <button class="active" data-client="happ">Happ</button>
+      <button data-client="v2rayng">v2rayNG</button>
+      <button data-client="streisand">Streisand</button>
+      <button data-client="shadowrocket">Shadowrocket</button>
+      <button data-client="clash">Clash Meta</button>
+      <button data-client="singbox">Sing-Box</button>
     </div>
-    
+
+    <div class="import-actions">
+      <a id="importDeepLink" href="happ://subscription/add/{{ sub_url }}" class="btn-main">
+        ║ IMPORT TO HAPP ║ <span class="tag">1 клик</span>
+      </a>
+      <button class="btn-copy" onclick="copySubUrl()">копировать ссылку</button>
+    </div>
+
+    <div class="sub-url-line">
+      <code id="subUrlDisplay">{{ sub_url }}</code>
+      <button onclick="copySubUrl()">копировать</button>
+    </div>
+
+    <div class="routing-row">
+      <span class="routing-label">■ маршрутизация:</span>
+      <a id="routingHapp" href="happ://routing/add/ewogICAgIkJsb2NrSXAiOiBbCiAgICBdLAogICAgIkJsb2NrU2l0ZXMiOiBbCiAgICAgICAgImdlb3NpdGU6V0lOLVNQWSIKICAgIF0sCiAgICAiRGlyZWN0SXAiOiBbCiAgICAgICAgIjEwLjAuMC4wLzgiLAogICAgICAgICIxNzIuMTYuMC4wLzEyIiwKICAgICAgICAiMTkyLjE2OC4wLjAvMTYiLAogICAgICAgICIxNjkuMjU0LjAuMC8xNiIsCiAgICAgICAgIjIyNC4wLjAuMC80IiwKICAgICAgICAiMjU1LjI1NS4yNTUuMjU1IiwKICAgICAgICAiZ2VvaXA6UlUiCiAgICBdLAogICAgIkRpcmVjdFNpdGVzIjogWwogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLUdPVi1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkFOSy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkVUVElORy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktRUNPTU1FUkNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1FTlRFUlRBSU5NRU5ULVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1NRURJQS1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktTUVESUNJTkUtUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVJFVEFJTC1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVRSQVZFTC1SVSIsCiAgICAgICAgImdlb3NpdGU6R0VOT1RFSy1SVSIsCiAgICAgICAgImdlb3NpdGU6SURFQ08tUlUiLAogICAgICAgICJnZW9zaXRlOk1BSUxSVSIsCiAgICAgICAgImdlb3NpdGU6TUFJTFJVLUdST1VQIiwKICAgICAgICAiZ2Vvc2l0ZTpNVFMtUlUiLAogICAgICAgICJnZW9zaXRlOk1ZT0ZGSUNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpUMi1SVSIsCiAgICAgICAgImdlb3NpdGU6VEJBTkstUlUiCiAgICBdLAogICAgIkRuc0hvc3RzIjogewogICAgICAgICJjbG91ZGZsYXJlLWRucy5jb20iOiAiMS4xLjEuMSIsCiAgICAgICAgImRucy5nb29nbGUiOiAiOC44LjguOCIKICAgIH0sCiAgICAiRG9tYWluU3RyYXRlZ3kiOiAiSVBJZk5vbk1hdGNoIiwKICAgICJEb21lc3RpY0ROU0RvbWFpbiI6ICJodHRwczovL2Rucy5nb29nbGUvZG5zLXF1ZXJ5IiwKICAgICJEb21lc3RpY0ROU0lQIjogIjguOC44LjgiLAogICAgIkRvbWVzdGljRE5TVHlwZSI6ICJEb0giLAogICAgIkZha2VETlMiOiAiZmFsc2UiLAogICAgIkdlb2lwdXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9Mb3lhbHNvbGRpZXIvdjJyYXktcnVsZXMtZGF0L3JlbGVhc2VzL2xhdGVzdC9kb3dubG9hZC9nZW9pcC5kYXQiLAogICAgIkdlb3NpdGV1cmwiOiAiaHR0cHM6Ly9naXRodWIuY29tL0xveWFsc29sZGllci92MnJheS1ydWxlcy1kYXQvcmVsZWFzZXMvbGF0ZXN0L2Rvd25sb2FkL2dlb3NpdGUuZGF0IiwKICAgICJHbG9iYWxQcm94eSI6ICJ0cnVlIiwKICAgICJMYXN0VXBkYXRlZCI6IDE3ODA5MDgxNzcsCiAgICAiTmFtZSI6ICJkaXJlY3QgcnUgd2ViIiwKICAgICJQcm94eUlwIjogWwogICAgXSwKICAgICJQcm94eVNpdGVzIjogWwogICAgXSwKICAgICJSZW1vdGVETlNEb21haW4iOiAiaHR0cHM6Ly9jbG91ZGZsYXJlLWRucy5jb20vZG5zLXF1ZXJ5IiwKICAgICJSZW1vdGVETlNJUCI6ICIxLjEuMS4xIiwKICAgICJSZW1vdGVETlNUeXBlIjogIkRvSCIsCiAgICAiUm91dGVPcmRlciI6ICJibG9jay1kaXJlY3QtcHJveHkiCn0K" class="btn-routing" target="_blank">
+        Happ <span class="key">routing</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- ─── Platforms ─── -->
+  <div class="platform-section">
+    <div class="platform-tabs">
+      <div class="platform-tab active" onclick="showPlatform('android', this)">Android</div>
+      <div class="platform-tab" onclick="showPlatform('ios', this)">iOS</div>
+      <div class="platform-tab" onclick="showPlatform('windows', this)">Windows</div>
+      <div class="platform-tab" onclick="showPlatform('macos', this)">macOS</div>
+      <div class="platform-tab" onclick="showPlatform('linux', this)">Linux</div>
+      <div class="platform-tab" onclick="showPlatform('openwrt', this)">OpenWRT</div>
+    </div>
+
     <!-- Android -->
     <div id="android" class="platform-content active">
-        <div class="card">
-            <h3>📱 Android</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Скачайте клиент</strong><br>
-                    Мы настоятельно рекомендуем <span class="recommendation">Happ</span> — скачайте из <a href="https://play.google.com/store/apps/details?id=com.happProxy" target="_blank">Google Play</a> или <a href="https://github.com/Happ-proxy/happ-android/releases" target="_blank">GitHub</a>.<br>
-                    Также можно использовать любой другой клиент с поддержкой VLESS/Vmess: V2rayNG, Clash Meta for Android.
-                </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ Android</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите Happ</strong>
+            <div>Рекомендуемый клиент — <span class="hl">Happ</span>. Скачайте из магазина или напрямую.</div>
+            <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:6px;">
+              <a class="dl-link" href="https://play.google.com/store/apps/details?id=com.happProxy" target="_blank">Google Play</a>
+              <a class="dl-link" href="https://github.com/Happ-proxy/happ-android/releases" target="_blank">GitHub APK</a>
             </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Настройка клиента</strong><br>
-                    Happ по умолчанию уже отлично настроен. Если настройки сломались, их можно откатить: шестеренка → листаем вниз → красная кнопка "Сброс" → сброс настроек.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Импортируйте подписку</strong><br>
-                    Скопируйте ссылку подписки (кнопка выше), затем в Happ: справа вверху плюсик → "Вставить из буфера обмена".
-                </div>
-            </div>
-            
-            <div class="note">
-                <strong>💡 Рекомендации:</strong><br>
-                • Обновляйте подписку — клиент делает это автоматически, но если что-то не работает, обновите вручную прежде чем писать в поддержку.<br>
-                • Не все конфиги доступны разом — это особенность нашего подхода. Есть несколько конфигов под разные задачи, и в разных условиях сети некоторые могут быть недоступны.<br>
-                • Для проверки доступности: справа от названия подписки нажмите кнопку спидометра. Клиент покажет пинг (мс) или "н/д" (не доступно).
-            </div>
+            <div style="margin-top:5px;color:#5a4a2a;font-size:12px;">Альтернативы: v2rayNG, Clash Meta</div>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Импортируйте подписку</strong>
+            <div>Нажмите кнопку <span class="hl">IMPORT TO HAPP</span> вверху страницы — подписка добавится автоматически.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Если не сработало: скопируйте ссылку → в Happ нажмите [+] → «Вставить из буфера».</div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Подключитесь</strong>
+            <div>Нажмите на переключатель. Готово.</div>
+          </div>
+        </div>
+        <div class="note" data-step="3">
+          <strong>Советы:</strong><br>
+          • Подписка обновляется автоматически. Если что-то не работает — обновите вручную.<br>
+          • Для проверки доступности конфигов нажмите кнопку спидометра рядом с подпиской.<br>
+          • Не все конфиги могут быть доступны одновременно — выбирайте тот, что с лучшим пингом.
+        </div>
+      </div>
     </div>
-    
+
     <!-- iOS -->
     <div id="ios" class="platform-content">
-        <div class="card">
-            <h3>🍎 iOS / iPadOS</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Скачайте клиент</strong><br>
-                    Рекомендуем <span class="recommendation">Happ</span> из <a href="https://apps.apple.com/app/happ-proxy-utility/id6504287215" target="_blank">App Store</a> (нужен Apple ID другого региона) или <a href="https://testflight.apple.com/join/..." target="_blank">TestFlight</a>.<br>
-                    Альтернативы: Streisand, Shadowrocket (если доступен в вашем регионе).
-                </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ iOS / iPadOS</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите Happ</strong>
+            <div>Рекомендуемый клиент — <span class="hl">Happ</span>.</div>
+            <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:6px;">
+              <a class="dl-link" href="https://apps.apple.com/app/happ-proxy-utility/id6504287215" target="_blank">App Store</a>
+              <a class="dl-link" href="https://testflight.apple.com/join/..." target="_blank">TestFlight</a>
             </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Импорт подписки</strong><br>
-                    Скопируйте ссылку подписки (кнопка выше). В Happ нажмите "+" вверху → "Добавить подписку" → вставьте URL.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Включите VPN</strong><br>
-                    Нажмите на переключатель рядом с подпиской. При первом подключении система попросит разрешение — нажмите "Разрешить".
-                </div>
-            </div>
-            
-            <div class="note">
-                <strong>💡 Совет:</strong> На iOS для стабильной работы рекомендуем использовать Happ с включённым "Include all networks" в настройках TUN (iOS 16.4+).
-            </div>
+            <div style="margin-top:5px;color:#5a4a2a;font-size:12px;">Альтернативы: Streisand, Shadowrocket</div>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Импортируйте подписку</strong>
+            <div>Нажмите <span class="hl">IMPORT TO HAPP</span> вверху страницы.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Не сработало? Скопируйте ссылку → в Happ нажмите [+] → «Добавить подписку».</div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Подключитесь</strong>
+            <div>Нажмите на переключатель. Разрешите VPN в системном диалоге при первом подключении.</div>
+          </div>
+        </div>
+        <div class="note" data-step="3">
+          <strong>Совет:</strong> Включите «Include all networks» в настройках TUN (iOS 16.4+) для стабильной работы.
+        </div>
+      </div>
     </div>
-    
+
     <!-- Windows -->
     <div id="windows" class="platform-content">
-        <div class="card">
-            <h3>🪟 Windows</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Скачайте клиент</strong><br>
-                    Рекомендуем <span class="recommendation">Happ</span> — скачайте с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub Releases</a>.<br>
-                    Альтернативы: v2rayN, Clash Verge, Clash Verge Rev, Hiddify.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Импорт подписки</strong><br>
-                    Happ сразу предложит импортировать подписку при первом запуске. Просто следуйте инструкциям.<br>
-                    Если нужно импортировать ещё раз: слева вверху плюсик в квадрате → "Subscription name": любое название → "Subscription URL": вставьте URL подписки.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Настройка клиента (важно!)</strong><br>
-                    В главном меню выберите режим <strong>TUN</strong> вместо Proxy.<br>
-                    Затем: Settings → Advanced Settings → Set system proxy: НЕТ, TUN: ДА.<br>
-                    Если по какой-то причине что-то продолжает работать напрямую, а не через туннель — перезапустите программу. Она подтянет настройки TUN.
-                </div>
-            </div>
-            
-            <div class="warning">
-                <strong>⚠️ Важно:</strong> На Windows режим Proxy работает только для приложений с поддержкой системного прокси. Для полной маршрутизации всего трафика используйте TUN режим.
-            </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ Windows</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите Happ Desktop</strong>
+            <div>Рекомендуемый клиент — <span class="hl">Happ</span>.</div>
+            <a class="dl-link" href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">Скачать с GitHub</a>
+            <div style="margin-top:5px;color:#5a4a2a;font-size:12px;">Альтернативы: v2rayN, Clash Verge, Hiddify</div>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Импортируйте подписку</strong>
+            <div>Нажмите <span class="hl">IMPORT TO HAPP</span> вверху страницы.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Не сработало? Скопируйте ссылку → в Happ нажмите [+] (левый верхний угол) → вставьте URL.</div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Включите TUN режим</strong>
+            <div>В главном меню выберите <span class="hl">TUN</span> вместо Proxy. Затем: Settings → Advanced → Set system proxy: НЕТ, TUN: ДА.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Перезапустите программу после настройки.</div>
+          </div>
+        </div>
+        <div class="warning" data-step="3">
+          <strong>Важно:</strong> Режим Proxy работает только для приложений с поддержкой системного прокси. Для полной маршрутизации используйте TUN режим.
+        </div>
+      </div>
     </div>
-    
+
     <!-- macOS -->
     <div id="macos" class="platform-content">
-        <div class="card">
-            <h3>🍏 macOS</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Скачайте клиент</strong><br>
-                    Рекомендуем <span class="recommendation">Happ</span> — скачайте с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub</a> (файл .dmg).<br>
-                    Альтернативы: Clash Verge, ClashX.Meta, V2RayXS, Streisand (из Mac App Store).
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Установка</strong><br>
-                    Откройте .dmg файл и перетащите Happ в Applications. При первом запуске может потребоваться разрешение в Системных настройках → Конфиденциальность и безопасность.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Импорт подписки</strong><br>
-                    Скопируйте ссылку подписки. В Happ нажмите "+" → вставьте URL подписки → нажмите OK.
-                </div>
-            </div>
-            
-            <div class="note">
-                <strong>💡 Совет:</strong> На macOS рекомендуем использовать Happ или Clash Verge в режиме TUN для максимальной совместимости со всеми приложениями.
-            </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ macOS</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите Happ Desktop</strong>
+            <div>Рекомендуемый клиент — <span class="hl">Happ</span>.</div>
+            <a class="dl-link" href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">Скачать .dmg</a>
+            <div style="margin-top:5px;color:#5a4a2a;font-size:12px;">Альтернативы: Clash Verge, Streisand (Mac App Store)</div>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Установка</strong>
+            <div>Откройте .dmg и перетащите Happ в Applications. Разрешите в Системных настройках → Конфиденциальность и безопасность.</div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Импорт и подключение</strong>
+            <div>Нажмите <span class="hl">IMPORT TO HAPP</span> вверху страницы или скопируйте ссылку и нажмите [+] в Happ.</div>
+          </div>
+        </div>
+        <div class="note" data-step="3">
+          <strong>Совет:</strong> Используйте TUN режим для максимальной совместимости со всеми приложениями.
+        </div>
+      </div>
     </div>
-    
+
     <!-- Linux -->
     <div id="linux" class="platform-content">
-        <div class="card">
-            <h3>🐧 Linux</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Скачайте клиент</strong><br>
-                    Рекомендуем <span class="recommendation">Happ</span> — скачайте AppImage с <a href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">GitHub</a>.<br>
-                    Альтернативы: Clash Verge Rev (AppImage), Hiddify, sing-box (CLI), v2rayA (Web UI).
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Запуск Happ (AppImage)</strong><br>
-                    Сделайте файл исполняемым: <code>chmod +x happ-desktop-*.AppImage</code><br>
-                    Запустите: <code>./happ-desktop-*.AppImage</code><br>
-                    Или используйте <a href="https://appimage.github.io/AppImageLauncher/" target="_blank">AppImageLauncher</a> для интеграции в систему.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Импорт подписки</strong><br>
-                    В Happ нажмите "+" в левом верхнем углу → введите название → вставьте URL подписки.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">4</div>
-                <div class="step-content">
-                    <strong>TUN режим (для всей системы)</strong><br>
-                    В настройках Happ включите TUN режим. Это требует прав root — Happ попросит пароль sudo.<br>
-                    Альтернатива: запустите Happ с правами sudo: <code>sudo ./happ-desktop-*.AppImage</code>
-                </div>
-            </div>
-            
-            <div class="note">
-                <strong>💡 Для продвинутых пользователей:</strong><br>
-                Можно использовать sing-box или Xray напрямую через CLI с конфигом, сконвертированным из подписки через <a href="https://v2rayse.com" target="_blank">v2rayse.com</a>.
-            </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ Linux</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите Happ</strong>
+            <div>Скачайте <span class="hl">Happ AppImage</span> для Linux.</div>
+            <a class="dl-link" href="https://github.com/Happ-proxy/happ-desktop/releases" target="_blank">Скачать AppImage</a>
+            <div style="margin-top:5px;color:#5a4a2a;font-size:12px;">Альтернативы: Clash Verge Rev, Hiddify, sing-box (CLI)</div>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Запуск</strong>
+            <div><code>chmod +x happ-*.AppImage</code> и <code>./happ-*.AppImage</code></div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Импорт</strong>
+            <div>Нажмите <span class="hl">IMPORT TO HAPP</span> вверху страницы. Или в Happ нажмите [+] → вставьте URL.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Для TUN режима: <code>sudo ./happ-*.AppImage</code></div>
+          </div>
+        </div>
+        <div class="note" data-step="3">
+          <strong>Для продвинутых:</strong> Используйте sing-box или Xray через CLI. Конвертируйте подписку через <a href="https://v2rayse.com" target="_blank">v2rayse.com</a>.
+        </div>
+      </div>
     </div>
-    
+
     <!-- OpenWRT -->
     <div id="openwrt" class="platform-content">
-        <div class="card">
-            <h3>📡 OpenWRT (роутер)</h3>
-            
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <strong>Установите необходимые пакеты</strong><br>
-                    Через SSH на роутере выполните:<br>
-                    <code>opkg update && opkg install sing-box v2ray-geoip v2ray-geosite</code><br>
-                    Или для Xray: <code>opkg install xray-core</code>
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <strong>Конвертируйте подписку в конфиг</strong><br>
-                    Подписка в формате base64 URI list. Используйте конвертер <a href="https://v2rayse.com" target="_blank">v2rayse.com</a> или скрипт:<br>
-                    <code>echo 'ВАША_ССЫЛКА_BASE64' | base64 -d</code> получите URI, затем вставьте вручную в sing-box/Xray конфиг.
-                </div>
-            </div>
-            
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <strong>Настройка sing-box</strong><br>
-                    Создайте конфиг <code>/etc/sing-box/config.json</code> с outbounds из ваших URI и routing rules для РФ (дописывайте direct для geosite:ru, geoip:ru).<br>
-                    Включите службу: <code>/etc/init.d/sing-box enable && /etc/init.d/sing-box start</code>
-                </div>
-            </div>
-            
-            <div class="warning">
-                <strong>⚠️ Требуется опыт:</strong> Настройка VPN на роутере требует понимания сетей. При неправильной конфигурации вы потеряете доступ к роутеру.
-            </div>
-            
-            <div class="note">
-                <strong>📚 Рекомендуем:</strong> Используйте готовые решения с OpenWRT + sing-box:<br>
-                • <a href="https://github.com/ophub/luci-app-sing-box" target="_blank">luci-app-sing-box</a> — Web UI для управления<br>
-                • <a href="https://github.com/xiaorouji/openwrt-passwall" target="_blank">OpenWrt Passwall</a> — комплексное решение
-            </div>
+      <div class="platform-card" data-step-wrapper>
+        <h3>◆ OpenWRT</h3>
+        <div class="step" data-step="0">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <strong>Установите пакеты</strong>
+            <div>Подключитесь по SSH:</div>
+            <code>opkg update && opkg install sing-box</code>
+          </div>
         </div>
+        <div class="step" data-step="1">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <strong>Конвертируйте подписку</strong>
+            <div>Используйте <a href="https://v2rayse.com" target="_blank">v2rayse.com</a> для конвертации URI в JSON конфиг.</div>
+            <div style="margin-top:4px;color:#5a4a2a;font-size:12px;">Или декодируйте вручную: <code>echo 'URL' | base64 -d</code></div>
+          </div>
+        </div>
+        <div class="step" data-step="2">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <strong>Настройка и запуск</strong>
+            <div>Конфиг в <code>/etc/sing-box/config.json</code></div>
+            <div><code>/etc/init.d/sing-box enable && /etc/init.d/sing-box start</code></div>
+          </div>
+        </div>
+        <div class="warning" data-step="3">
+          <strong>Требуется опыт:</strong> Настройка VPN на роутере требует понимания сетей. При неправильной конфигурации вы потеряете доступ к роутеру.
+        </div>
+        <div class="note" data-step="4">
+          <strong>Полезные ссылки:</strong><br>
+          • <a href="https://github.com/ophub/luci-app-sing-box" target="_blank">luci-app-sing-box</a> — Web UI<br>
+          • <a href="https://github.com/xiaorouji/openwrt-passwall" target="_blank">OpenWrt Passwall</a> — комплексное решение
+        </div>
+      </div>
     </div>
-    
-    <script>
-        function showPlatform(platform) {
-            // Hide all
-            document.querySelectorAll('.platform-content').forEach(el => el.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-            
-            // Show selected
-            document.getElementById(platform).classList.add('active');
-            event.target.classList.add('active');
-        }
-        
-        function copyLink() {
-            const linkText = document.getElementById('sub-link').innerText;
-            const btn = document.getElementById('copy-btn');
-            
-            // Try modern clipboard API first
-            if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(linkText).then(function() {
-                    showSuccess(btn);
-                }, function(err) {
-                    fallbackCopy(linkText, btn);
-                });
-            } else {
-                fallbackCopy(linkText, btn);
-            }
-        }
-        
-        function fallbackCopy(text, btn) {
-            // Create temporary textarea
-            const textArea = document.createElement('textarea');
-            textArea.value = text;
-            textArea.style.position = 'fixed';
-            textArea.style.left = '-999999px';
-            textArea.style.top = '-999999px';
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-            
-            try {
-                const successful = document.execCommand('copy');
-                if (successful) {
-                    showSuccess(btn);
-                } else {
-                    alert('Не удалось скопировать. Пожалуйста, скопируйте вручную.');
-                }
-            } catch (err) {
-                alert('Не удалось скопировать. Пожалуйста, скопируйте вручную.');
-            }
-            
-            document.body.removeChild(textArea);
-        }
-        
-        function showSuccess(btn) {
-            const originalText = btn.innerText;
-            btn.innerText = '✅ Скопировано!';
-            btn.classList.add('btn-success');
-            setTimeout(function() {
-                btn.innerText = originalText;
-                btn.classList.remove('btn-success');
-            }, 2000);
-        }
-        
-        function importRouting() {
-            const routingLink = 'happ://routing/add/ewogICAgIkJsb2NrSXAiOiBbCiAgICBdLAogICAgIkJsb2NrU2l0ZXMiOiBbCiAgICAgICAgImdlb3NpdGU6V0lOLVNQWSIKICAgIF0sCiAgICAiRGlyZWN0SXAiOiBbCiAgICAgICAgIjEwLjAuMC4wLzgiLAogICAgICAgICIxNzIuMTYuMC4wLzEyIiwKICAgICAgICAiMTkyLjE2OC4wLjAvMTYiLAogICAgICAgICIxNjkuMjU0LjAuMC8xNiIsCiAgICAgICAgIjIyNC4wLjAuMC80IiwKICAgICAgICAiMjU1LjI1NS4yNTUuMjU1IiwKICAgICAgICAiZ2VvaXA6UlUiCiAgICBdLAogICAgIkRpcmVjdFNpdGVzIjogWwogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLUdPVi1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkFOSy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktQkVUVElORy1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktRUNPTU1FUkNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1FTlRFUlRBSU5NRU5ULVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpDQVRFR09SWS1NRURJQS1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktTUVESUNJTkUtUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVJFVEFJTC1SVSIsCiAgICAgICAgImdlb3NpdGU6Q0FURUdPUlktUlUiLAogICAgICAgICJnZW9zaXRlOkNBVEVHT1JZLVRSQVZFTC1SVSIsCiAgICAgICAgImdlb3NpdGU6R0VOT1RFSy1SVSIsCiAgICAgICAgImdlb3NpdGU6SURFQ08tUlUiLAogICAgICAgICJnZW9zaXRlOk1BSUxSVSIsCiAgICAgICAgImdlb3NpdGU6TUFJTFJVLUdST1VQIiwKICAgICAgICAiZ2Vvc2l0ZTpNVFMtUlUiLAogICAgICAgICJnZW9zaXRlOk1ZT0ZGSUNFLVJVIiwKICAgICAgICAiZ2Vvc2l0ZTpUMi1SVSIsCiAgICAgICAgImdlb3NpdGU6VEJBTkstUlUiCiAgICBdLAogICAgIkRuc0hvc3RzIjogewogICAgICAgICJjbG91ZGZsYXJlLWRucy5jb20iOiAiMS4xLjEuMSIsCiAgICAgICAgImRucy5nb29nbGUiOiAiOC44LjguOCIKICAgIH0sCiAgICAiRG9tYWluU3RyYXRlZ3kiOiAiSVBJZk5vbk1hdGNoIiwKICAgICJEb21lc3RpY0ROU0RvbWFpbiI6ICJodHRwczovL2Rucy5nb29nbGUvZG5zLXF1ZXJ5IiwKICAgICJEb21lc3RpY0ROU0lQIjogIjguOC44LjgiLAogICAgIkRvbWVzdGljRE5TVHlwZSI6ICJEb0giLAogICAgIkZha2VETlMiOiAiZmFsc2UiLAogICAgIkdlb2lwdXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9Mb3lhbHNvbGRpZXIvdjJyYXktcnVsZXMtZGF0L3JlbGVhc2VzL2xhdGVzdC9kb3dubG9hZC9nZW9pcC5kYXQiLAogICAgIkdlb3NpdGV1cmwiOiAiaHR0cHM6Ly9naXRodWIuY29tL0xveWFsc29sZGllci92MnJheS1ydWxlcy1kYXQvcmVsZWFzZXMvbGF0ZXN0L2Rvd25sb2FkL2dlb3NpdGUuZGF0IiwKICAgICJHbG9iYWxQcm94eSI6ICJ0cnVlIiwKICAgICJMYXN0VXBkYXRlZCI6IDE3ODA5MDgxNzcsCiAgICAiTmFtZSI6ICJkaXJlY3QgcnUgd2ViIiwKICAgICJQcm94eUlwIjogWwogICAgXSwKICAgICJQcm94eVNpdGVzIjogWwogICAgXSwKICAgICJSZW1vdGVETlNEb21haW4iOiAiaHR0cHM6Ly9jbG91ZGZsYXJlLWRucy5jb20vZG5zLXF1ZXJ5IiwKICAgICJSZW1vdGVETlNJUCI6ICIxLjEuMS4xIiwKICAgICJSZW1vdGVETlNUeXBlIjogIkRvSCIsCiAgICAiUm91dGVPcmRlciI6ICJibG9jay1kaXJlY3QtcHJveHkiCn0K';
-            const btn = document.getElementById('routing-btn');
-            try {
-                window.open(routingLink, '_blank');
-                btn.innerText = '✅ Открыто!';
-                btn.style.background = '#28a745';
-                setTimeout(function() {
-                    btn.innerText = '🌐 Импорт маршрутизации';
-                    btn.style.background = '#ff9800';
-                }, 3000);
-            } catch (e) {
-                alert('Не удалось открыть ссылку. Скопируйте вручную: ' + routingLink);
-            }
-        }
-    </script>
+</div>
+
+  <!-- ─── Footer ─── -->
+  <div class="footer">
+    <p>Avava VPN — вопросы? <a href="https://t.me/avavapng_bot">@avavapng_bot</a></p>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  Easing
+// ═══════════════════════════════════════════
+var ELASTIC_DURATION = 1000;
+
+function easeOutElastic(t) {
+  if (t === 0 || t === 1) return t;
+  var c4 = (2 * Math.PI) / 3;
+  return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+}
+
+// ═══════════════════════════════════════════
+//  Low-level animation: animate a single CSS
+//  property from -> to over duration with easing.
+//  easingFn — function(t) that returns [0..1].
+//  Defaults to easeOutElastic if not provided.
+//  Returns a promise that resolves when done.
+// ═══════════════════════════════════════════
+function easeOutCubic(t) {
+  var t1 = t - 1;
+  return t1 * t1 * t1 + 1;
+}
+
+function animateProp(el, prop, from, to, duration, unit, easingFn) {
+  return new Promise(function(resolve) {
+    unit = unit || '';
+    var startTime = performance.now();
+    var fn = easingFn || easeOutElastic;
+
+    function frame(now) {
+      var t = Math.min((now - startTime) / duration, 1);
+      var e = fn(t);
+      var v = from + (to - from) * e;
+
+      if (prop === 'scale') {
+        el.style.transform = 'scale(' + v + ')';
+      } else if (prop === 'translateY') {
+        el.style.transform = 'translateY(' + v + unit + ')';
+      } else if (prop === 'opacity') {
+        el.style.opacity = v;
+      } else if (prop === 'brightness') {
+        el.style.filter = 'brightness(' + v + ')';
+      } else {
+        el.style[prop] = v + unit;
+      }
+
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        if (prop === 'scale') el.style.transform = 'scale(' + to + ')';
+        else if (prop === 'translateY') el.style.transform = 'translateY(' + to + unit + ')';
+        else if (prop === 'opacity') el.style.opacity = to;
+        else if (prop === 'brightness') { if (to >= 1) el.style.filter = ''; else el.style.filter = 'brightness(' + to + ')'; }
+        else el.style[prop] = to + unit;
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Entrance: all frames stagger via setTimeout.
+//  JS sets initial state; NEVER clears inline
+//  styles to '' — always writes final values.
+// ═══════════════════════════════════════════
+
+var ENTRANCE_STAGGER = 120;
+var ENTRANCE_OPACITY_MS = 500;
+var ENTRANCE_TRANSLATE_MS = 700;
+var ENTRANCE_BG_MS = 500;
+
+function runEntrance() {
+  var frames = [
+    { selector: '.header' },
+    { selector: '.import-section' },
+    { selector: '.platform-section', steps: true },
+    { selector: '.footer' },
+  ];
+
+  // Set initial state for ALL frames immediately
+  frames.forEach(function(frame) {
+    var el = document.querySelector(frame.selector);
+    if (!el) return;
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(30px)';
+    el.style.filter = 'brightness(4)';
+  });
+
+  frames.forEach(function(frame, i) {
+    var el = document.querySelector(frame.selector);
+    if (!el) return;
+
+    setTimeout(function() {
+      animateProp(el, 'opacity', 0, 1, ENTRANCE_OPACITY_MS, '', easeOutCubic);
+      animateProp(el, 'translateY', 30, 0, ENTRANCE_TRANSLATE_MS, 'px', easeOutElastic);
+      animateProp(el, 'brightness', 4, 1, ENTRANCE_BG_MS, '', easeOutCubic);
+
+      if (frame.steps) {
+        var activeContent = document.querySelector('.platform-content.active');
+        if (activeContent) animateStepsIn(activeContent);
+      }
+    }, i * ENTRANCE_STAGGER);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Step entrance: all stagger at once, no await
+// ═══════════════════════════════════════════
+var STEP_STAGGER = 60;
+var STEP_OPACITY_MS = 350;
+var STEP_TRANSLATE_MS = 600;
+var STEP_BG_MS = 350;
+
+function animateStepsIn(container) {
+  var wrapper = container.querySelector('[data-step-wrapper]');
+  if (!wrapper) return;
+
+  var items = wrapper.querySelectorAll('[data-step]');
+  items.forEach(function(el, i) {
+    el.style.filter = 'brightness(4)';
+
+    setTimeout(function() {
+      animateProp(el, 'opacity', 0, 1, STEP_OPACITY_MS, '', easeOutCubic);
+      animateProp(el, 'translateY', 16, 0, STEP_TRANSLATE_MS, 'px', easeOutElastic);
+      animateProp(el, 'brightness', 4, 1, STEP_BG_MS, '', easeOutCubic);
+    }, i * STEP_STAGGER);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Hover / Unhover
+// ═══════════════════════════════════════════
+function attachHover(el, key, scaleIn) {
+  el.addEventListener('mouseenter', function() {
+    animateProp(el, 'scale', 1, scaleIn, 500);
+  });
+  el.addEventListener('mouseleave', function() {
+    animateProp(el, 'scale', scaleIn, 1, ELASTIC_DURATION);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Click press / release
+// ═══════════════════════════════════════════
+function attachClickBounce(el, key) {
+  el.addEventListener('mousedown', function() {
+    animateProp(el, 'scale', 1, 0.92, 200);
+  });
+  el.addEventListener('mouseup', function() {
+    animateProp(el, 'scale', 0.92, 1, ELASTIC_DURATION);
+  });
+  el.addEventListener('mouseleave', function() {
+    animateProp(el, 'scale', 0.92, 1, ELASTIC_DURATION);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Platform tabs
+// ═══════════════════════════════════════════
+function showPlatform(id, tabEl) {
+  document.querySelectorAll('.platform-tab').forEach(function(t) { t.classList.remove('active'); });
+  tabEl.classList.add('active');
+
+  animateProp(tabEl, 'scale', 1, 1.05, 300);
+  setTimeout(function() { animateProp(tabEl, 'scale', 1.05, 1, ELASTIC_DURATION); }, 80);
+
+  document.querySelectorAll('.platform-content').forEach(function(p) { p.classList.remove('active'); });
+
+  var content = document.getElementById(id);
+  content.classList.add('active');
+
+  var wrapper = content.querySelector('[data-step-wrapper]');
+  if (wrapper) {
+    wrapper.querySelectorAll('[data-step]').forEach(function(el) {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(16px)';
+      el.style.filter = 'brightness(4)';
+    });
+  }
+
+  animateStepsIn(content);
+}
+
+// ═══════════════════════════════════════════
+//  Client selector
+// ═══════════════════════════════════════════
+function selectClient(client) {
+  var btns = document.querySelectorAll('#clientRow button');
+  btns.forEach(function(b) {
+    b.classList.remove('active');
+    b.style.transform = '';
+  });
+
+  var selected = document.querySelector('#clientRow button[data-client="' + client + '"]');
+  selected.classList.add('active');
+
+  animateProp(selected, 'scale', 1, 1.12, 400);
+  setTimeout(function() { animateProp(selected, 'scale', 1.12, 1, ELASTIC_DURATION); }, 120);
+
+  var link = document.getElementById('importDeepLink');
+  var subUrl = document.getElementById('subUrlDisplay').textContent.trim();
+
+  var deepLinks = {
+    happ: 'happ://subscription/add/' + encodeURIComponent(subUrl),
+    v2rayng: 'v2rayng://subscribe/?url=' + encodeURIComponent(subUrl),
+    streisand: 'streisand://import/' + encodeURIComponent(subUrl),
+    shadowrocket: 'shadowrocket://add/sub?url=' + encodeURIComponent(subUrl),
+    clash: 'clash://install-config?url=' + encodeURIComponent(subUrl),
+    singbox: 'sing-box://import-remote?url=' + encodeURIComponent(subUrl),
+  };
+
+  var labels = {
+    happ: 'IMPORT TO HAPP',
+    v2rayng: 'IMPORT TO V2RAYNG',
+    streisand: 'IMPORT TO STREISAND',
+    shadowrocket: 'IMPORT TO SHADOWROCKET',
+    clash: 'IMPORT TO CLASH META',
+    singbox: 'IMPORT TO SING-BOX',
+  };
+
+  link.href = deepLinks[client] || deepLinks.happ;
+  link.innerHTML = '║ ' + (labels[client] || 'IMPORT TO HAPP') + ' ║ <span class="tag">1 клик</span>';
+}
+
+// ═══════════════════════════════════════════
+//  Copy URL
+// ═══════════════════════════════════════════
+function copySubUrl() {
+  var text = document.getElementById('subUrlDisplay').textContent.trim();
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(showCopied);
+  } else {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showCopied();
+  }
+}
+
+function showCopied() {
+  var btns = document.querySelectorAll('.sub-url-line button, .btn-copy');
+  btns.forEach(function(btn) {
+    btn.textContent = 'скопировано';
+    animateProp(btn, 'scale', 1, 1.06, 300);
+    setTimeout(function() {
+      btn.textContent = btn.classList.contains('btn-copy') ? 'копировать ссылку' : 'копировать';
+    }, 1800);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Wire everything
+// ═══════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('#clientRow button').forEach(function(btn) {
+    btn.addEventListener('click', function() { selectClient(btn.dataset.client); });
+    attachHover(btn, 'c-' + btn.dataset.client, 1.08);
+    attachClickBounce(btn, 'cc-' + btn.dataset.client);
+  });
+
+  var mainBtn = document.querySelector('.btn-main');
+  if (mainBtn) {
+    attachHover(mainBtn, 'main', 1.04);
+  }
+
+  var copyBtn = document.querySelector('.btn-copy');
+  if (copyBtn) {
+    attachHover(copyBtn, 'copy', 1.06);
+    attachClickBounce(copyBtn, 'copy-click');
+  }
+
+  document.querySelectorAll('.btn-routing').forEach(function(btn, i) {
+    attachHover(btn, 'r-' + i, 1.06);
+    attachClickBounce(btn, 'rc-' + i);
+  });
+
+  document.querySelectorAll('.platform-tab').forEach(function(tab) {
+    attachHover(tab, 't-' + Math.random().toString(36).slice(2, 6), 1.06);
+    attachClickBounce(tab, 'tc-' + Math.random().toString(36).slice(2, 6));
+  });
+
+  document.querySelectorAll('.dl-link').forEach(function(link, i) {
+    attachHover(link, 'dl-' + i, 1.06);
+  });
+
+  document.querySelectorAll('.sub-url-line button').forEach(function(btn, i) {
+    attachHover(btn, 'sb-' + i, 1.06);
+  });
+
+  runEntrance();
+});
+</script>
 </body>
 </html>
 """

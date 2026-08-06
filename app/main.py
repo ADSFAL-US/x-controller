@@ -933,8 +933,9 @@ def list_subscriptions_api():
 def list_panels():
     """Список всех панелей и их статус."""
     panels_info = []
-    for panel in xui_client.panels:
+    for idx, panel in enumerate(xui_client.panels):
         panels_info.append({
+            'id': idx,
             'name': panel.config.name,
             'host': panel.config.host,
             'priority': panel.config.priority,
@@ -943,6 +944,92 @@ def list_panels():
         })
     
     return jsonify({'panels': panels_info})
+
+
+@app.route('/api/panels/<int:panel_id>', methods=['GET'])
+@require_auth
+def get_panel_details(panel_id):
+    """Get detailed information about a specific panel."""
+    if panel_id < 0 or panel_id >= len(xui_client.panels):
+        return jsonify({'error': f'Panel with index {panel_id} not found'}), 404
+    
+    panel = xui_client.panels[panel_id]
+    
+    return jsonify({
+        'panel': {
+            'id': panel_id,
+            'name': panel.config.name,
+            'host': panel.config.host,
+            'panel_path': panel.config.panel_path,
+            'sub_host': panel.config.sub_host,
+            'sub_path': panel.config.sub_path,
+            'username': panel.config.username,
+            'priority': panel.config.priority,
+            'max_clients': panel.config.max_clients,
+        }
+    })
+
+
+@app.route('/api/panels/<int:panel_id>/health', methods=['GET'])
+@require_auth
+def panel_health(panel_id):
+    """Health check for a specific panel."""
+    # Find panel by index (0-based in xui_client.panels)
+    if panel_id < 0 or panel_id >= len(xui_client.panels):
+        return jsonify({
+            'status': 'not_found',
+            'error': f'Panel with index {panel_id} not found',
+            'panel_id': panel_id
+        }), 404
+    
+    panel = xui_client.panels[panel_id]
+    
+    import time
+    start_time = time.time()
+    
+    try:
+        # Try to login to the panel
+        connected = panel.login()
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        if connected:
+            # Try to get inbounds to verify full connectivity
+            try:
+                inbounds = panel.get_inbounds()
+                inbound_count = len(inbounds) if inbounds else 0
+            except Exception:
+                inbound_count = 0
+            
+            return jsonify({
+                'status': 'healthy',
+                'latency_ms': latency_ms,
+                'panel_id': panel_id,
+                'panel_name': panel.config.name,
+                'host': panel.config.host,
+                'inbounds_count': inbound_count,
+                'last_checked': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'status': 'unhealthy',
+                'latency_ms': latency_ms,
+                'panel_id': panel_id,
+                'panel_name': panel.config.name,
+                'host': panel.config.host,
+                'error': 'Authentication failed',
+                'last_checked': datetime.now().isoformat()
+            })
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        return jsonify({
+            'status': 'unhealthy',
+            'latency_ms': latency_ms,
+            'panel_id': panel_id,
+            'panel_name': panel.config.name,
+            'host': panel.config.host,
+            'error': str(e),
+            'last_checked': datetime.now().isoformat()
+        })
 
 
 @app.route('/sub/<token>')
@@ -3924,6 +4011,154 @@ def sync_single_subscription(subscription_id):
         })
     except Exception as e:
         logger.exception(f"Failed to schedule sync for subscription {subscription_id}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== Whitelist Bypass Traffic API ====================
+
+@app.route('/api/subscriptions/<int:subscription_id>/whitelist-traffic', methods=['GET'])
+@require_auth
+def get_whitelist_bypass_traffic(subscription_id):
+    """
+    Get traffic usage for whitelist bypass configs (configs matching transform rule ID=1).
+    
+    Returns:
+    - used_gb: Total traffic used on whitelist bypass configs
+    - limit_gb: Traffic limit (50 GB)
+    - remaining_gb: Remaining traffic
+    - configs_count: Number of whitelist bypass configs in subscription
+    - is_exhausted: Whether limit is reached
+    """
+    try:
+        sub = Subscription.query.get_or_404(subscription_id)
+        
+        # Get the whitelist bypass transform rule (ID=1)
+        whitelist_rule = ConfigTransformRule.query.get(1)
+        if not whitelist_rule or not whitelist_rule.is_active:
+            return jsonify({
+                'success': True,
+                'used_gb': 0,
+                'limit_gb': 50,
+                'remaining_gb': 50,
+                'configs_count': 0,
+                'is_exhausted': False,
+                'message': 'Whitelist bypass rule not found or inactive'
+            })
+        
+        # Collect all configs from all panels for this subscription
+        all_uris = []
+        config_traffic = {}  # uri_str -> bytes_used
+        
+        for panel in xui_client.panels:
+            try:
+                panel.login()
+                
+                # Find client's subId in this panel
+                inbounds = panel.get_inbounds()
+                client_sub_id = None
+                
+                for inbound in inbounds:
+                    inbound_id = inbound.get('id')
+                    protocol = inbound.get('protocol', 'vless').lower()
+                    settings_str = inbound.get('settings', '{}')
+                    try:
+                        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str
+                        for client in settings.get('clients', []):
+                            match = False
+                            if protocol == 'shadowsocks':
+                                match = client.get('password') == sub.ss_password
+                            else:
+                                match = client.get('id') == sub.uuid
+                            
+                            if match:
+                                client_sub_id = client.get('subId') or client.get('id')
+                                client_email = client.get('email', '')
+                                
+                                # Get per-inbound traffic
+                                if client_email:
+                                    traffic = panel.get_client_traffic(client_email)
+                                    up = traffic.get('up', 0)
+                                    down = traffic.get('down', 0)
+                                    port = inbound.get('port', 443)
+                                    # Store traffic by port for matching with URI later
+                                    config_traffic[f"port_{port}"] = up + down
+                                break
+                    except Exception:
+                        continue
+                    if client_sub_id:
+                        break
+                
+                # Get subscription content and map URIs to traffic
+                if client_sub_id:
+                    sub_content = panel.get_subscription_content(client_sub_id)
+                    if sub_content:
+                        try:
+                            decoded = base64.b64decode(sub_content).decode('utf-8')
+                            uris = [u.strip() for u in decoded.split('\n') if u.strip()]
+                            for uri in uris:
+                                all_uris.append(uri)
+                                # Extract port from URI to match traffic
+                                parsed = parse_vless_uri(uri)
+                                if parsed and 'port' in parsed:
+                                    port_key = f"port_{parsed['port']}"
+                                    if port_key in config_traffic:
+                                        config_traffic[uri] = config_traffic[port_key]
+                                    else:
+                                        config_traffic[uri] = 0
+                        except Exception as e:
+                            logger.warning(f"Panel {panel.config.name}: failed to decode subscription: {e}")
+            except Exception as e:
+                logger.exception(f"Failed to collect configs from {panel.config.name}")
+        
+        # Apply transform rules to find which configs match the whitelist rule
+        # We only care about rule ID=1 (whitelist bypass)
+        whitelist_rules = [whitelist_rule]
+        transformed_uris = apply_transform_rules(
+            all_uris, whitelist_rules,
+            total_used_map={u: config_traffic.get(u, 0) / (1024**3) for u in all_uris}
+        )
+        
+        # The transform rules will EXCLUDE configs that exceed traffic limit
+        # So we need to check which original configs matched the rule BEFORE exclusion
+        # Let's check which configs match the selector pattern
+        whitelist_configs = []
+        selector_pattern = whitelist_rule.selector_pattern or ''
+        if selector_pattern:
+            patterns = [p.strip().lower() for p in selector_pattern.split(',') if p.strip()]
+            for uri in all_uris:
+                config_name = ""
+                if '#' in uri:
+                    config_name = uri.split('#')[-1]
+                    try:
+                        config_name = urllib.parse.unquote(config_name)
+                    except Exception:
+                        pass
+                
+                config_name_lower = config_name.lower()
+                if any(p in config_name_lower for p in patterns):
+                    whitelist_configs.append(uri)
+        
+        # Calculate total traffic for whitelist configs
+        total_bytes = 0
+        for uri in whitelist_configs:
+            total_bytes += config_traffic.get(uri, 0)
+        
+        used_gb = total_bytes / (1024**3)
+        limit_gb = 50  # Hardcoded 50 GB limit for whitelist bypass
+        remaining_gb = max(0, limit_gb - used_gb)
+        is_exhausted = used_gb >= limit_gb
+        
+        return jsonify({
+            'success': True,
+            'used_gb': round(used_gb, 2),
+            'limit_gb': limit_gb,
+            'remaining_gb': round(remaining_gb, 2),
+            'configs_count': len(whitelist_configs),
+            'is_exhausted': is_exhausted
+        })
+        
+    except Exception as e:
+        logger.exception(f"Failed to get whitelist bypass traffic for subscription {subscription_id}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

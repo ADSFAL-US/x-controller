@@ -322,6 +322,20 @@ class SyncService:
                         else:
                             existing = panel.find_client_by_id(subscription.uuid, [inbound])
                         
+                        # Also check for duplicate subId in this inbound (3x-ui doesn't enforce uniqueness)
+                        # Our subId == uuid, but panel might have clients with same subId from manual edits
+                        sub_id = client_data.get('subId')
+                        if not existing and sub_id:
+                            for client in json.loads(inbound.get('settings', '{}') or '{}').get('clients', []):
+                                if client.get('subId') == sub_id:
+                                    logger.warning(
+                                        f"Duplicate subId {sub_id} found in {panel.config.name}/inbound-{inbound_id} "
+                                        f"(existing client email: {client.get('email')}, uuid: {client.get('id')}). "
+                                        f"Skipping create for {subscription.email}."
+                                    )
+                                    existing = {'client_id': client.get('id'), 'client': client}
+                                    break
+                        
                         if existing:
                             logger.debug(f"Client already exists in {panel.config.name}/inbound-{inbound_id}, skipping create")
                             success = True

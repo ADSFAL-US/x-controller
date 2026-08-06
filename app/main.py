@@ -4053,12 +4053,15 @@ def get_whitelist_bypass_traffic(subscription_id):
             try:
                 panel.login()
                 
-                # Find client's subId in this panel
+                # Get TOTAL traffic for this client across ALL inbounds (by UUID)
+                traffic = panel.get_client_traffic_by_uuid(sub.uuid, sub.ss_password)
+                total_bytes = traffic.get('upload', 0) + traffic.get('download', 0)
+                
+                # Find client's subId in this panel to get subscription content
                 inbounds = panel.get_inbounds()
                 client_sub_id = None
                 
                 for inbound in inbounds:
-                    inbound_id = inbound.get('id')
                     protocol = inbound.get('protocol', 'vless').lower()
                     settings_str = inbound.get('settings', '{}')
                     try:
@@ -4072,23 +4075,13 @@ def get_whitelist_bypass_traffic(subscription_id):
                             
                             if match:
                                 client_sub_id = client.get('subId') or client.get('id')
-                                client_email = client.get('email', '')
-                                
-                                # Get per-inbound traffic
-                                if client_email:
-                                    traffic = panel.get_client_traffic(client_email)
-                                    up = traffic.get('up', 0)
-                                    down = traffic.get('down', 0)
-                                    port = inbound.get('port', 443)
-                                    # Store traffic by port for matching with URI later
-                                    config_traffic[f"port_{port}"] = up + down
                                 break
                     except Exception:
                         continue
                     if client_sub_id:
                         break
                 
-                # Get subscription content and map URIs to traffic
+                # Get subscription content and map URIs to total traffic
                 if client_sub_id:
                     sub_content = panel.get_subscription_content(client_sub_id)
                     if sub_content:
@@ -4097,14 +4090,12 @@ def get_whitelist_bypass_traffic(subscription_id):
                             uris = [u.strip() for u in decoded.split('\n') if u.strip()]
                             for uri in uris:
                                 all_uris.append(uri)
-                                # Extract port from URI to match traffic
+                                # Verify this URI belongs to our client (match by UUID)
                                 parsed = parse_vless_uri(uri)
-                                if parsed and 'port' in parsed:
-                                    port_key = f"port_{parsed['port']}"
-                                    if port_key in config_traffic:
-                                        config_traffic[uri] = config_traffic[port_key]
-                                    else:
-                                        config_traffic[uri] = 0
+                                if parsed and parsed.get('uuid') == sub.uuid:
+                                    config_traffic[uri] = total_bytes
+                                else:
+                                    config_traffic[uri] = 0
                         except Exception as e:
                             logger.warning(f"Panel {panel.config.name}: failed to decode subscription: {e}")
             except Exception as e:

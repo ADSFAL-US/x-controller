@@ -370,8 +370,29 @@ class SyncService:
                             if not success:
                                 error_msg = f"Failed to update client in inbound {inbound_id}"
                         else:
-                            # Client not in this inbound, add it (treat as create)
-                            success = panel.add_client(inbound_id, client_data)
+                            # Client not in this inbound - check for duplicates before creating
+                            # This can happen if client was manually deleted from panel
+                            sub_id = client_data.get('subId')
+                            duplicate = None
+                            if sub_id:
+                                for client in json.loads(inbound.get('settings', '{}') or '{}').get('clients', []):
+                                    if client.get('subId') == sub_id:
+                                        duplicate = client
+                                        break
+                            
+                            if duplicate:
+                                logger.warning(
+                                    f"Update fallback: duplicate subId {sub_id} found in {panel.config.name}/inbound-{inbound_id} "
+                                    f"(existing email: {duplicate.get('email')}, uuid: {duplicate.get('id')}). "
+                                    f"Skipping create for {subscription.email}."
+                                )
+                                success = True
+                            else:
+                                logger.warning(
+                                    f"Client {subscription.uuid} not found in {panel.config.name}/inbound-{inbound_id} "
+                                    f"during update, creating new (self-heal)"
+                                )
+                                success = panel.add_client(inbound_id, client_data)
                             if not success:
                                 error_msg = f"Failed to add client to inbound {inbound_id}"
                             

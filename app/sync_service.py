@@ -251,6 +251,36 @@ class SyncService:
                 all_success = False
                 continue
             
+            # CLEANUP DUPLICATES for this subscription's subId across all inbounds
+            # If there are multiple clients with the same subId in any inbound, delete ALL of them
+            # They will be recreated correctly below
+            sub_id = subscription.uuid  # subId == uuid in our implementation
+            if sub_id:
+                for inbound in inbounds:
+                    inbound_id = inbound.get('id')
+                    if not inbound_id:
+                        continue
+                    
+                    settings_str = inbound.get('settings', '{}')
+                    try:
+                        settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str or {}
+                        clients = settings.get('clients', [])
+                        
+                        # Find all clients with this subId
+                        dup_clients = [c for c in clients if c.get('subId') == sub_id]
+                        
+                        if len(dup_clients) > 1:
+                            logger.warning(
+                                f"Duplicate subId {sub_id} found in {panel.config.name}/inbound-{inbound_id} "
+                                f"({len(dup_clients)} clients). Deleting ALL to recreate."
+                            )
+                            for client in dup_clients:
+                                client_id = client.get('id')
+                                if client_id:
+                                    panel.delete_client(inbound_id, client_id)
+                    except (json.JSONDecodeError, TypeError, Exception) as e:
+                        logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}")
+            
             logger.info(f"Panel {panel.config.name}: found {len(inbounds)} inbounds for {subscription.email}")
             
             panel_success = True
@@ -753,6 +783,7 @@ class SyncService:
     def _execute_sync_plan(self, panel, plan: Dict):
         """
         Execute sync plan with proper ordering:
+        0. Cleanup duplicates (remove ALL clients with duplicate subId, will recreate from DB)
         1. Creates (add new clients)
         2. Deletes (remove orphaned/disabled clients)  
         3. Updates (fix drift)
@@ -760,6 +791,42 @@ class SyncService:
         inbounds = panel.get_inbounds()
         if not inbounds:
             return
+        
+        # 0. CLEANUP DUPLICATES: Find subIds that appear multiple times in same inbound
+        # For each such subId, delete ALL clients with that subId - they will be recreated from DB
+        for inbound in inbounds:
+            inbound_id = inbound.get('id')
+            if not inbound_id:
+                continue
+            
+            settings_str = inbound.get('settings', '{}')
+            try:
+                settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str or {}
+                clients = settings.get('clients', [])
+                
+                # Group by subId
+                by_subid = {}
+                for client in clients:
+                    sub_id = client.get('subId')
+                    if sub_id:
+                        by_subid.setdefault(sub_id, []).append(client)
+                
+                # For each subId with multiple clients, delete ALL of them
+                for sub_id, dup_clients in by_subid.items():
+                    if len(dup_clients) <= 1:
+                        continue
+                    
+                    logger.warning(
+                        f"Duplicate subId {sub_id} found in {panel.config.name}/inbound-{inbound_id} "
+                        f"({len(dup_clients)} clients). Deleting ALL to recreate from DB."
+                    )
+                    for client in dup_clients:
+                        client_id = client.get('id')
+                        if client_id:
+                            panel.delete_client(inbound_id, client_id)
+                                
+            except (json.JSONDecodeError, TypeError, Exception) as e:
+                logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}")
         
         # 1. EXECUTE CREATES (highest priority)
         for item in plan['create']:
@@ -788,7 +855,30 @@ class SyncService:
                         except Exception:
                             pass
                     
-                    success = panel.add_client(inbound_id, client_data)
+                    # Check for duplicate subId before creating (auto-sync path)
+                    sub_id = client_data.get('subId')
+                    duplicate = None
+                    if sub_id:
+                        settings_str = inbound.get('settings', '{}')
+                        try:
+                            settings = json.loads(settings_str) if isinstance(settings_str, str) else settings_str or {}
+                            for client in settings.get('clients', []):
+                                if client.get('subId') == sub_id:
+                                    duplicate = client
+                                    break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    
+                    if duplicate:
+                        logger.warning(
+                            f"Auto-sync: duplicate subId {sub_id} found in {panel.config.name}/inbound-{inbound_id} "
+                            f"(existing email: {duplicate.get('email')}, uuid: {duplicate.get('id')}). "
+                            f"Skipping create for {sub.email}."
+                        )
+                        success = True
+                    else:
+                        success = panel.add_client(inbound_id, client_data)
+                    
                     status = "✓" if success else "✗"
                     logger.info(f"  {status} CREATE {sub.email} in inbound {inbound_id}: {item['reason']}")
                         

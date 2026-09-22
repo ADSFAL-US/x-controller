@@ -857,14 +857,13 @@ def update_subscription_api(subscription_id):
         sub.total_gb = float(data['total_gb'])
     if 'expiry_days' in data:
         new_expiry_days = int(data['expiry_days'])
-        if new_expiry_days != sub.expiry_days:
-            sub.expiry_days = new_expiry_days
-            # Recalculate absolute expiration timestamp
-            if new_expiry_days > 0:
-                from datetime import timedelta
-                sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
-            else:
-                sub.expire_at = None
+        sub.expiry_days = new_expiry_days
+        # Recalculate absolute expiration timestamp for every explicit update.
+        if new_expiry_days > 0:
+            from datetime import timedelta
+            sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
+        else:
+            sub.expire_at = None
     if 'enabled' in data:
         sub.enabled = bool(data['enabled'])
     if 'flow' in data:

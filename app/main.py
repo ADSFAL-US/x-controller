@@ -15,6 +15,7 @@ from flask import Flask, jsonify, request, render_template_string, redirect, url
 from app.xui_client import XUIClient
 from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, AutoSelectRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
+from app.auto_select import build_auto_select_config
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Настройка логирования
@@ -1395,6 +1396,23 @@ def subscription_link(token):
     if not all_uris:
         return "No active configurations found", 404
     
+    # Auto-select: inject Xray JSON config (id 0) built from user's configs
+    # and configured fallback rules. Served via ?format=xray or as first item
+    # when client requests it.
+    auto_select_json = None
+    if gsettings.auto_select_enabled:
+        as_rules = AutoSelectRule.query.filter_by(is_active=True).order_by(
+            AutoSelectRule.priority.desc()
+        ).all()
+        try:
+            auto_select_json, as_count = build_auto_select_config(all_uris, as_rules, gsettings)
+            if auto_select_json:
+                logger.info(f"Auto-select config built: {as_count} outbounds, {len(as_rules)} fallback rules")
+            else:
+                logger.info("Auto-select skipped: not enough candidate configs")
+        except Exception:
+            logger.exception("Failed to build auto-select config")
+    
     # Calculate expiry timestamp for happ format
     from datetime import timedelta
     
@@ -1499,6 +1517,10 @@ def subscription_link(token):
         yaml_text = _build_clash_yaml(proxies, gsettings.custom_rules or '')
         headers['Content-Type'] = 'text/yaml; charset=utf-8'
         return yaml_text, 200, headers
+    elif request.args.get('format') == 'xray' and auto_select_json:
+        # Full Xray JSON config with native auto-select (balancer + observatory)
+        headers['Content-Type'] = 'application/json; charset=utf-8'
+        return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     else:
         # Base64-encoded URI list (standard for v2rayN/Shadowrocket/happ)
         uri_text = '\n'.join(all_uris)

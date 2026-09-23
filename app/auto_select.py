@@ -39,25 +39,8 @@ def _pick(q, key, default):
     return _coerce(v)
 
 
-# Поля, которые 3x-ui НЕ передаёт в URI, но ждёт во flat xhttpSettings
-XHTTP_FLAT_DEFAULTS = {
-    'scMaxConcurrentPosts': 10,
-    'scMaxEachPostBytes': 1000000,
-    'scMinPostsIntervalMs': 30,
-}
-
-# Поля, которые уезжают в nested xhttpSettings.extra
-XHTTP_EXTRA_KEYS = (
-    'scMaxBufferedPosts',
-    'scMaxEachPostBytes', 'scMinPostsIntervalMs',   # дубликат flat — НЕ сливать!
-    'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
-    'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
-    'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement',
-)
-
-
 def parse_vless_link(link, tag):
-    """vless:// URI -> Xray outbound JSON в точности как у 3x-ui."""
+    """Парсит vless:// URI в Xray outbound JSON в точности как 3x-ui."""
     try:
         part = link.split('://', 1)[1]
         body = part.split('#', 1)[0]
@@ -96,7 +79,7 @@ def parse_vless_link(link, tag):
         elif network in ('xhttp', 'splithttp'):
             xhttp = {}
 
-            # extra — первым (как сериализует 3x-ui)
+            # 1. extra= JSON из URI — как есть
             extra = {}
             extra_str = q.get('extra')
             if extra_str:
@@ -107,23 +90,29 @@ def parse_vless_link(link, tag):
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            # legacy: extra-поля могут прийти плоскими в query (от трансформера)
-            for key in XHTTP_EXTRA_KEYS:
-                if key in ('scMaxEachPostBytes', 'scMinPostsIntervalMs'):
-                    continue  # эти идут во flat, не дублируем сюда без явного extra=
+            # 2. scMaxEachPostBytes / scMinPostsIntervalMs приходят в flat-query,
+            #    но по семантике Xray они принадлежат extra. Переносим их туда.
+            for key in ('scMaxEachPostBytes', 'scMinPostsIntervalMs'):
+                if key in q and key not in extra:
+                    extra[key] = _coerce(q[key])
+
+            # 3. Прочие legacy extra-поля, если продюсер записал их плоско
+            for key in ('scMaxBufferedPosts', 'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
+                        'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
+                        'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement'):
                 if key in q and key not in extra:
                     extra[key] = _coerce(q[key])
 
             if extra:
                 xhttp['extra'] = extra
 
-            # flat — с инжектом дефолтов 3x-ui
+            # 4. Flat-поля верхнего уровня — как их пишет 3x-ui в JSON-конфиг клиента
             xhttp['host'] = q.get('host', '')
             xhttp['mode'] = q.get('mode', 'auto')
             xhttp['path'] = q.get('path', '/')
-            xhttp['scMaxConcurrentPosts'] = _pick(q, 'scMaxConcurrentPosts', XHTTP_FLAT_DEFAULTS['scMaxConcurrentPosts'])
-            xhttp['scMaxEachPostBytes']   = _pick(q, 'scMaxEachPostBytes',   XHTTP_FLAT_DEFAULTS['scMaxEachPostBytes'])
-            xhttp['scMinPostsIntervalMs'] = _pick(q, 'scMinPostsIntervalMs', XHTTP_FLAT_DEFAULTS['scMinPostsIntervalMs'])
+            xhttp['scMaxConcurrentPosts'] = _pick(q, 'scMaxConcurrentPosts', 10)
+            xhttp['scMaxEachPostBytes']   = 1000000   # 3x-ui default (НЕ из URI!)
+            xhttp['scMinPostsIntervalMs'] = 30        # 3x-ui default (НЕ из URI!)
 
             stream['xhttpSettings'] = xhttp
 
@@ -151,7 +140,6 @@ def parse_vless_link(link, tag):
 
         elif security == 'tls':
             stream['security'] = 'tls'
-            # 3x-ui пишет все Reality-поля плоско даже для обычного TLS
             stream['tlsSettings'] = {
                 'allowInsecure': q.get('allowInsecure', 'false').lower() == 'true',
                 'alpn': (q.get('alpn') or 'h2,http/1.1').split(','),

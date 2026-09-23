@@ -111,8 +111,8 @@ def parse_vless_link(link, tag):
             xhttp['mode'] = q.get('mode', 'auto')
             xhttp['path'] = q.get('path', '/')
             xhttp['scMaxConcurrentPosts'] = _pick(q, 'scMaxConcurrentPosts', 10)
-            xhttp['scMaxEachPostBytes']   = 1000000   # 3x-ui default (НЕ из URI!)
-            xhttp['scMinPostsIntervalMs'] = 30        # 3x-ui default (НЕ из URI!)
+            xhttp['scMaxEachPostBytes']   = 3000   # 3x-ui default (НЕ из URI!)
+            xhttp['scMinPostsIntervalMs'] = 150        # 3x-ui default (НЕ из URI!)
 
             stream['xhttpSettings'] = xhttp
 

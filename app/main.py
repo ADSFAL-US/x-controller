@@ -2991,6 +2991,11 @@ def auto_select_settings():
         """
 
     enabled_checked = 'checked' if settings.auto_select_enabled else ''
+    ping_timeout = settings.auto_select_ping_timeout_ms or 2000
+    ping_interval = settings.auto_select_ping_interval_sec or 60
+    ping_tolerance = settings.auto_select_ping_tolerance_ms or 50
+    min_uptime = settings.auto_select_min_uptime_pct or 90
+    history_checks = settings.auto_select_history_checks or 10
 
     return render_template_string(f"""
     <!DOCTYPE html>
@@ -3042,27 +3047,27 @@ def auto_select_settings():
                 </div>
                 <div class="form-group">
                     <label>Ping Timeout (ms):</label>
-                    <input type="number" name="auto_select_ping_timeout_ms" value="{{ settings.auto_select_ping_timeout_ms or 2000 }}" min="100" step="100">
+                    <input type="number" name="auto_select_ping_timeout_ms" value="{ping_timeout}" min="100" step="100">
                     <div class="help">Таймаут проверки доступности одного конфига. Конфигы с пингом выше таймаута считаются недоступными.</div>
                 </div>
                 <div class="form-group">
                     <label>Recheck Interval (sec):</label>
-                    <input type="number" name="auto_select_ping_interval_sec" value="{{ settings.auto_select_ping_interval_sec or 60 }}" min="10" step="10">
+                    <input type="number" name="auto_select_ping_interval_sec" value="{ping_interval}" min="10" step="10">
                     <div class="help">Как часто перепроверять доступность и скорость конфигов.</div>
                 </div>
                 <div class="form-group">
                     <label>Ping Tolerance (ms):</label>
-                    <input type="number" name="auto_select_ping_tolerance_ms" value="{{ settings.auto_select_ping_tolerance_ms or 50 }}" min="0" step="10">
+                    <input type="number" name="auto_select_ping_tolerance_ms" value="{ping_tolerance}" min="0" step="10">
                     <div class="help">Допустимая разница в пинге: если новый конфиг быстрее текущего менее чем на это значение — переключение не выполняется (защита от постоянных переподключений).</div>
                 </div>
                 <div class="form-group">
                     <label>Min Uptime (%):</label>
-                    <input type="number" name="auto_select_min_uptime_pct" value="{{ settings.auto_select_min_uptime_pct or 90 }}" min="0" max="100" step="5">
+                    <input type="number" name="auto_select_min_uptime_pct" value="{min_uptime}" min="0" max="100" step="5">
                     <div class="help">Минимальный процент успешных проверок доступности, чтобы конфиг считался стабильным кандидатом.</div>
                 </div>
                 <div class="form-group">
                     <label>Uptime History (checks):</label>
-                    <input type="number" name="auto_select_history_checks" value="{{ settings.auto_select_history_checks or 10 }}" min="2" max="100">
+                    <input type="number" name="auto_select_history_checks" value="{history_checks}" min="2" max="100">
                     <div class="help">Сколько последних проверок учитывать при расчёте uptime.</div>
                 </div>
                 <button type="submit">Save Settings</button>

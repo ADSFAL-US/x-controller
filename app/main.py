@@ -1520,8 +1520,8 @@ def subscription_link(token):
         headers['Content-Type'] = 'text/yaml; charset=utf-8'
         return yaml_text, 200, headers
     elif auto_select_json and not is_clash:
-        # JSON subscription with native auto-select (balancer + observatory).
-        # Served as the primary format when auto-select is enabled.
+        # JSON-array subscription (Happ "JSON Arrays" format):
+        # [0] auto-select profile (balancer + observatory), [1..n] each config separately
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     else:

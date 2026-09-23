@@ -1,13 +1,14 @@
-"""Генератор автоселект-конфига (Xray JSON) для подписки.
+"""Генератор JSON-подписки (Xray) с автовыбором для Happ/Incognito/v2rayTun.
 
-Собирает полный клиентский конфиг Xray-core с нативным автовыбором:
-  - все конфиги пользователя становятся аутбаундами с тегами as-t<tier>-<n>
-  - burstObservatory пингует их (HTTP 204 через прокси)
-  - балансер leastLoad выбирает самый стабильный с учётом весов tiers:
-    * tier 1 (highest priority) — минимальный cost, выбирается пока жив
-    * tier 2, 3... — cost растёт, выбираются только если верхние tier-ы мертвы
-    * конфиги, не попавшие ни в один tier — последний tier с максимальным cost
-  - если мертвы все — fallbackTag на первый конфиг первого tier-а
+Формат — JSON-массив профилей (Happ "JSON Arrays"):
+  [0] — автоселект-профиль: полный Xray конфиг с балансером и observatory.
+       Все конфиги пользователя внутри как аутбаунды, настоящий автовыбор
+       с fallback-цепочкой по tier-ам. remarks = имя тега из настроек WUI.
+  [1..n] — каждый конфиг пользователя отдельным мини-профилем
+       (один аутбаунд + socks inbound), remarks = имя конфига.
+
+Каждый элемент передаётся в Xray core 1:1 (включая VLESS Encryption
+mlkem768x25519plus), так что все конфиги работают как обычно.
 
 Параметры берутся из GlobalSettings (таймауты пинга, sampling) и
 AutoSelectRule (fallback-уровни по include/exclude тегам).
@@ -112,13 +113,35 @@ def _matches_tier(name, rule):
     return True
 
 
+def _build_single_profile(uri, remark):
+    """Мини-профиль для одного конфига: один аутбаунд + socks inbound."""
+    out = parse_vless_link(uri, 'proxy')
+    if not out:
+        return None
+    return {
+        'log': {'loglevel': 'warning'},
+        'remarks': remark,
+        'inbounds': [
+            {
+                'tag': 'in',
+                'listen': '127.0.0.1',
+                'port': 10808,
+                'protocol': 'socks',
+                'settings': {'udp': True},
+                'sniffing': {'enabled': True, 'routeOnly': True},
+            }
+        ],
+        'outbounds': [out, {'tag': 'direct', 'protocol': 'freedom'}],
+    }
+
+
 def build_auto_select_config(all_uris, rules, gsettings):
-    """Собирает Xray JSON-конфиг автовыбора.
+    """Собирает JSON-массив подписки: автоселект-профиль + все конфиги отдельно.
 
     :param all_uris: список vless:// URI пользователя (уже отфильтрованный preset'ом)
     :param rules: список AutoSelectRule (active), отсортированный по priority DESC
     :param gsettings: GlobalSettings
-    :return: (dict конфига, int число конфигов в автовыборе) или (None, 0)
+    :return: (list профилей, int число конфигов в автовыборе) или (None, 0)
     """
     if not all_uris:
         return None, 0
@@ -187,8 +210,8 @@ def build_auto_select_config(all_uris, rules, gsettings):
 
     config = {
         'log': {'loglevel': 'warning'},
-        # Имя профиля — видно в клиентах, поддерживающих комментарии к конфигу
-        'comment': tag_name,
+        # Имя профиля в списке клиента (Happ: remarks)
+        'remarks': tag_name,
         'inbounds': [
             {
                 'tag': 'in',
@@ -216,12 +239,11 @@ def build_auto_select_config(all_uris, rules, gsettings):
         },
         'routing': {
             'rules': [
-                {'network': 'tcp,udp', 'balancerTag': tag_name},
+                {'network': 'tcp,udp', 'balancerTag': 'auto-select'},
             ],
             'balancers': [
                 {
-                    # Имя балансера = имя автоселект-тега из настроек WUI
-                    'tag': tag_name,
+                    'tag': 'auto-select',
                     'selector': [AUTO_SELECT_TAG_PREFIX],
                     'strategy': {
                         'type': 'leastLoad',
@@ -236,4 +258,12 @@ def build_auto_select_config(all_uris, rules, gsettings):
             ],
         },
     }
-    return config, len(outbounds)
+
+    # JSON-массив подписки: [0] автоселект, [1..n] каждый конфиг отдельно
+    profiles = [config]
+    for uri in all_uris:
+        profile = _build_single_profile(uri, _uri_name(uri))
+        if profile:
+            profiles.append(profile)
+
+    return profiles, len(outbounds)

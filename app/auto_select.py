@@ -123,6 +123,9 @@ def build_auto_select_config(all_uris, rules, gsettings):
     if not all_uris:
         return None, 0
 
+    # Имя автоселект-профиля из настроек WUI
+    tag_name = (getattr(gsettings, 'auto_select_tag_name', None) or '⚡ AUTO SELECT').strip() or '⚡ AUTO SELECT'
+
     # Раскладываем URI по tiers согласно правилам
     tiers = [[] for _ in rules] + [[]]  # последний — "всё остальное"
     used = set()
@@ -184,7 +187,8 @@ def build_auto_select_config(all_uris, rules, gsettings):
 
     config = {
         'log': {'loglevel': 'warning'},
-        # comment: автоселект-конфиг, полный JSON доступен по ?format=xray
+        # Имя профиля — видно в клиентах, поддерживающих комментарии к конфигу
+        'comment': tag_name,
         'inbounds': [
             {
                 'tag': 'in',
@@ -212,11 +216,12 @@ def build_auto_select_config(all_uris, rules, gsettings):
         },
         'routing': {
             'rules': [
-                {'network': 'tcp,udp', 'balancerTag': 'auto-select'},
+                {'network': 'tcp,udp', 'balancerTag': tag_name},
             ],
             'balancers': [
                 {
-                    'tag': 'auto-select',
+                    # Имя балансера = имя автоселект-тега из настроек WUI
+                    'tag': tag_name,
                     'selector': [AUTO_SELECT_TAG_PREFIX],
                     'strategy': {
                         'type': 'leastLoad',

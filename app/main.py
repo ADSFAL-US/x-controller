@@ -1397,9 +1397,9 @@ def subscription_link(token):
     if not all_uris:
         return "No active configurations found", 404
     
-    # Auto-select: inject Xray JSON config (id 0) built from user's configs
-    # and configured fallback rules. Served via ?format=xray or as first item
-    # when client requests it.
+    # Auto-select: build full Xray JSON subscription with native auto-select
+    # (balancer + observatory). If enabled and built successfully — serve it as
+    # the subscription (JSON). On any failure — fall back to legacy base64 URI list.
     auto_select_json = None
     if gsettings.auto_select_enabled:
         as_rules = AutoSelectRule.query.filter_by(is_active=True).order_by(
@@ -1409,30 +1409,11 @@ def subscription_link(token):
             auto_select_json, as_count = build_auto_select_config(all_uris, as_rules, gsettings)
             if auto_select_json:
                 logger.info(f"Auto-select config built: {as_count} outbounds, {len(as_rules)} fallback rules")
-                # Вставляем автоселект-конфиг первым в подписку (id 0).
-                # Это vless-ссылка на самый приоритетный конфиг с именем-тегом:
-                # клиенты без поддержки Xray-балансера используют её как обычный конфиг,
-                # а имя подсказывает пользователю что это автовыбор.
-                tag_name = (gsettings.auto_select_tag_name or '⚡ AUTO SELECT').strip() or '⚡ AUTO SELECT'
-                # Базовая ссылка — fallback-конфиг (самый приоритетный живой кандидат)
-                fallback_tag = auto_select_json['routing']['balancers'][0].get('fallbackTag')
-                base_uri = None
-                for out in auto_select_json['outbounds']:
-                    if out.get('tag') == fallback_tag:
-                        # Находим исходный URI по адресу/порту
-                        for uri in all_uris:
-                            if f"@{out['settings']['address']}:{out['settings']['port']}" in uri:
-                                base_uri = uri
-                                break
-                        break
-                if base_uri:
-                    auto_uri = base_uri.split('#', 1)[0] + '#' + urllib.parse.quote(tag_name)
-                    all_uris.insert(0, auto_uri)
-                    logger.info(f"Auto-select config inserted first in subscription: '{tag_name}'")
             else:
                 logger.info("Auto-select skipped: not enough candidate configs")
         except Exception:
-            logger.exception("Failed to build auto-select config")
+            logger.exception("Failed to build auto-select config, falling back to legacy subscription")
+            auto_select_json = None
     
     # Calculate expiry timestamp for happ format
     from datetime import timedelta
@@ -1538,12 +1519,13 @@ def subscription_link(token):
         yaml_text = _build_clash_yaml(proxies, gsettings.custom_rules or '')
         headers['Content-Type'] = 'text/yaml; charset=utf-8'
         return yaml_text, 200, headers
-    elif request.args.get('format') == 'xray' and auto_select_json:
-        # Full Xray JSON config with native auto-select (balancer + observatory)
+    elif auto_select_json and not is_clash:
+        # JSON subscription with native auto-select (balancer + observatory).
+        # Served as the primary format when auto-select is enabled.
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     else:
-        # Base64-encoded URI list (standard for v2rayN/Shadowrocket/happ)
+        # Legacy fallback: base64-encoded URI list (v2rayN/Shadowrocket/happ)
         uri_text = '\n'.join(all_uris)
         encoded = base64.b64encode(uri_text.encode()).decode()
         return encoded, 200, headers

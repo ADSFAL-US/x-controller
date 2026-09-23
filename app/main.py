@@ -1701,12 +1701,16 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
     Returns the modified URI string, or the original if parsing fails.
     """
     # Fields that go into the `extra` JSON object (all xHTTP fields)
-    xhttp_extra_fields = {
-        'scMaxConcurrentPosts', 'scMaxEachPostBytes',
-        'scMinPostsIntervalMs', 'scMaxBufferedPosts',
+    # Flat на верхнем уровне xhttpSettings
+    XHTTP_FLAT_FIELDS = {
+        'scMaxConcurrentPosts', 'scMaxEachPostBytes', 'scMinPostsIntervalMs',
+    }
+    # Внутри xhttpSettings.extra
+    XHTTP_EXTRA_FIELDS = {
+        'scMaxBufferedPosts',
+        'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
         'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
-        'xPaddingMethod', 'xPaddingObfsMode',
-        'uplinkHTTPMethod',
+        'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement',
     }
 
     parsed = parse_vless_uri(uri_str)
@@ -1716,28 +1720,21 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
     for t in transforms:
         field = t.get('field', '').strip()
         value = t.get('value', '').strip()
-
         if not field:
             continue
-
-        logger.debug(f"TRANSFORM: applying field='{field}' value='{value}' to uri='{parsed.get('name', '')[:40]}'")
 
         if field == 'address':
             parsed['address'] = value
         elif field == 'port':
-            try:
-                parsed['port'] = int(value)
-            except (ValueError, TypeError):
-                pass
+            try: parsed['port'] = int(value)
+            except (ValueError, TypeError): pass
         elif field == 'name':
             parsed['name'] = value
         elif field == 'encryption':
-            if value:
-                parsed['params']['encryption'] = value
-            else:
-                parsed['params'].pop('encryption', None)
-        elif field in xhttp_extra_fields:
-            # Inject into the `extra` JSON (xPadding*, uplink*)
+            if value: parsed['params']['encryption'] = value
+            else: parsed['params'].pop('encryption', None)
+        elif field in XHTTP_EXTRA_FIELDS:
+            # → вложенный extra={...}
             parsed['params'].pop(field, None)
             extra_str = parsed['params'].get('extra', '{}')
             try:
@@ -1746,10 +1743,7 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
                 extra = {}
             if value:
                 try:
-                    if '.' in value:
-                        extra[field] = float(value)
-                    else:
-                        extra[field] = int(value)
+                    extra[field] = float(value) if '.' in value else int(value)
                 except (ValueError, TypeError):
                     if value.lower() in ('true', 'false'):
                         extra[field] = value.lower() == 'true'
@@ -1758,8 +1752,10 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
             else:
                 extra.pop(field, None)
             parsed['params']['extra'] = json.dumps(extra, ensure_ascii=False, separators=(',', ':'))
+        # elif field in XHTTP_FLAT_FIELDS: → не нужно, они попадут в else ниже
         else:
-            # All other fields (sc*, mode, host, path, etc.) → flat query params
+            # Flat: сюда попадут scMaxConcurrentPosts/scMaxEachPostBytes/scMinPostsIntervalMs,
+            # а также path/host/mode/security/sni/pbk/...
             if value:
                 parsed['params'][field] = value
             else:

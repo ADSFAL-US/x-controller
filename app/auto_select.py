@@ -21,22 +21,8 @@ AUTO_SELECT_TAG_PREFIX = 'as-'
 DEFAULT_PROBE_URL = 'https://connectivitycheck.gstatic.com/generate_204'
 
 
-XHTTP_FLAT_FIELDS = (
-    'path', 'host', 'mode',
-    'scMaxConcurrentPosts', 'scMaxEachPostBytes', 'scMinPostsIntervalMs',
-)
-
-XHTTP_EXTRA_FIELDS = (
-    'scMaxBufferedPosts',
-    'scMaxEachPostBytes', 'scMinPostsIntervalMs',   # дубликаты flat, НЕ сливать!
-    'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
-    'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
-    'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement',
-)
-
-
-def _coerce_param(raw):
-    """'10' -> 10, 'true' -> True, '0-0' -> '0-0' (строка)."""
+def _coerce(raw):
+    """'10' -> 10, 'true' -> True, '0-0' -> '0-0'."""
     if not isinstance(raw, str):
         return raw
     try:
@@ -45,8 +31,33 @@ def _coerce_param(raw):
         return raw
 
 
+def _pick(q, key, default):
+    """Берём из query, если непустое; иначе default. С приведением типа."""
+    v = q.get(key)
+    if v is None or v == '':
+        return default
+    return _coerce(v)
+
+
+# Поля, которые 3x-ui НЕ передаёт в URI, но ждёт во flat xhttpSettings
+XHTTP_FLAT_DEFAULTS = {
+    'scMaxConcurrentPosts': 10,
+    'scMaxEachPostBytes': 1000000,
+    'scMinPostsIntervalMs': 30,
+}
+
+# Поля, которые уезжают в nested xhttpSettings.extra
+XHTTP_EXTRA_KEYS = (
+    'scMaxBufferedPosts',
+    'scMaxEachPostBytes', 'scMinPostsIntervalMs',   # дубликат flat — НЕ сливать!
+    'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
+    'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
+    'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement',
+)
+
+
 def parse_vless_link(link, tag):
-    """Парсит vless:// URI в Xray outbound JSON (совместимо с 3x-ui)."""
+    """vless:// URI -> Xray outbound JSON в точности как у 3x-ui."""
     try:
         part = link.split('://', 1)[1]
         body = part.split('#', 1)[0]
@@ -55,16 +66,15 @@ def parse_vless_link(link, tag):
         address, port = netloc.rsplit(':', 1)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(query_str).items()}
 
-        # ── user ──────────────────────────────────────────────
+        # ── user ────────────────────────────────────────────
         user = {'id': userinfo, 'security': 'auto'}
         enc = q.get('encryption')
         if enc and enc != 'none':
             user['encryption'] = enc
-        flow = q.get('flow')
-        if flow:
-            user['flow'] = flow
+        if q.get('flow'):
+            user['flow'] = q['flow']
 
-        # ── streamSettings ────────────────────────────────────
+        # ── streamSettings ──────────────────────────────────
         stream = {}
         network = q.get('type', 'tcp')
         stream['network'] = network
@@ -86,12 +96,7 @@ def parse_vless_link(link, tag):
         elif network in ('xhttp', 'splithttp'):
             xhttp = {}
 
-            # ПЛОСКИЕ поля верхнего уровня xhttpSettings
-            for key in XHTTP_FLAT_FIELDS:
-                if key in q:
-                    xhttp[key] = _coerce_param(q[key])
-
-            # ВЛОЖЕННЫЙ extra — только из явного extra= или из legacy-flat
+            # extra — первым (как сериализует 3x-ui)
             extra = {}
             extra_str = q.get('extra')
             if extra_str:
@@ -102,20 +107,25 @@ def parse_vless_link(link, tag):
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            # Если продюсер (трансформер) записал extra-поля плоско — подберём.
-            # ВАЖНО: НЕ трогаем scMaxEachPostBytes/scMinPostsIntervalMs, они уже
-            # ушли flat выше. Если хочется продублировать их в extra — бери
-            # из q['extra']-JSON, а не из плоских query.
-            for key in XHTTP_EXTRA_FIELDS:
+            # legacy: extra-поля могут прийти плоскими в query (от трансформера)
+            for key in XHTTP_EXTRA_KEYS:
                 if key in ('scMaxEachPostBytes', 'scMinPostsIntervalMs'):
-                    continue  # уже flat
+                    continue  # эти идут во flat, не дублируем сюда без явного extra=
                 if key in q and key not in extra:
-                    extra[key] = _coerce_param(q[key])
+                    extra[key] = _coerce(q[key])
 
             if extra:
                 xhttp['extra'] = extra
-            if xhttp:
-                stream['xhttpSettings'] = xhttp
+
+            # flat — с инжектом дефолтов 3x-ui
+            xhttp['host'] = q.get('host', '')
+            xhttp['mode'] = q.get('mode', 'auto')
+            xhttp['path'] = q.get('path', '/')
+            xhttp['scMaxConcurrentPosts'] = _pick(q, 'scMaxConcurrentPosts', XHTTP_FLAT_DEFAULTS['scMaxConcurrentPosts'])
+            xhttp['scMaxEachPostBytes']   = _pick(q, 'scMaxEachPostBytes',   XHTTP_FLAT_DEFAULTS['scMaxEachPostBytes'])
+            xhttp['scMinPostsIntervalMs'] = _pick(q, 'scMinPostsIntervalMs', XHTTP_FLAT_DEFAULTS['scMinPostsIntervalMs'])
+
+            stream['xhttpSettings'] = xhttp
 
         elif network == 'httpupgrade':
             hu = {}
@@ -125,7 +135,7 @@ def parse_vless_link(link, tag):
                 hu['host'] = q['host']
             stream['httpupgradeSettings'] = hu
 
-        # security / reality / tls — как было
+        # ── security ────────────────────────────────────────
         security = q.get('security', '')
         if security == 'reality':
             stream['security'] = 'reality'
@@ -138,21 +148,21 @@ def parse_vless_link(link, tag):
             if q.get('spx'):
                 reality['spiderX'] = q['spx']
             stream['realitySettings'] = reality
+
         elif security == 'tls':
             stream['security'] = 'tls'
-            tls = {}
-            if q.get('sni'):
-                tls['serverName'] = q['sni']
-            if q.get('alpn'):
-                tls['alpn'] = q['alpn'].split(',')
-            if q.get('fp'):
-                tls['fingerprint'] = q['fp']
-            if q.get('allowInsecure') in ('1', 'true', 'True'):
-                tls['allowInsecure'] = True
-            if tls:
-                stream['tlsSettings'] = tls
+            # 3x-ui пишет все Reality-поля плоско даже для обычного TLS
+            stream['tlsSettings'] = {
+                'allowInsecure': q.get('allowInsecure', 'false').lower() == 'true',
+                'alpn': (q.get('alpn') or 'h2,http/1.1').split(','),
+                'fingerprint': q.get('fp', 'chrome'),
+                'publicKey': q.get('pbk', ''),
+                'serverName': q.get('sni', ''),
+                'shortId': q.get('sid', ''),
+                'show': False,
+                'spiderX': q.get('spx', ''),
+            }
 
-        # ── outbound ──────────────────────────────────────────
         return {
             'tag': tag,
             'protocol': 'vless',
@@ -167,7 +177,7 @@ def parse_vless_link(link, tag):
         }
     except Exception:
         return None
-
+    
 
 def _uri_name(uri):
     """Имя конфига (fragment после #), URL-декодированное."""

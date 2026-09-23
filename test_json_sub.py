@@ -14,13 +14,32 @@ raw = urllib.request.urlopen(req, timeout=10).read().strip()
 import json
 try:
     profiles = json.loads(raw)
-    print(f'Subscription is already JSON: {len(profiles)} profiles')
-    p0 = profiles[0]
-    print(f'[0] remarks: {p0.get("remarks")}, outbounds: {len(p0.get("outbounds", []))}')
-    for p in profiles[1:]:
-        o = p['outbounds'][0]
-        print(f'    - {p.get("remarks")} -> {o["settings"]["address"]}:{o["settings"]["port"]}')
-    sys.exit(0)
+    print(f'Subscription is already JSON: {type(profiles)}')
+    
+    # Проверяем, является ли это профилем (списком) или полным конфигом
+    if isinstance(profiles, list):
+        print(f'Это массив профилей: {len(profiles)} профилей')
+        if len(profiles) > 0:
+            p0 = profiles[0]
+            print(f'[0] remarks: {p0.get("remarks")}, outbounds: {len(p0.get("outbounds", []))}')
+            for p in profiles[1:]:
+                o = p['outbounds'][0]
+                print(f'    - {p.get("remarks")} -> {o["settings"]["address"]}:{o["settings"]["port"]}')
+        sys.exit(0)
+    elif isinstance(profiles, dict):
+        print(f'Это полный Xray конфиг (словарь)')
+        print(f'Ключи: {list(profiles.keys())}')
+        if 'outbounds' in profiles:
+            print(f'Количество outbounds: {len(profiles["outbounds"])}')
+            # Ищем авто-селект
+            for i, outbound in enumerate(profiles['outbounds']):
+                tag = outbound.get('tag', '')
+                if 'auto' in tag.lower() or 'select' in tag.lower():
+                    print(f'Найден авто-селект: {tag} (индекс {i})')
+        sys.exit(0)
+    else:
+        print(f'Неизвестный тип JSON: {type(profiles)}')
+        sys.exit(1)
 except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
     print(f'JSON parse issue: {e!r}, treating as base64')
     pad = (-len(raw)) % 4

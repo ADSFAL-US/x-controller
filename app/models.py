@@ -314,7 +314,15 @@ class GlobalSettings(db.Model):
     expired_sub_enabled = db.Column(db.Boolean, default=False)
     expired_preset_id = db.Column(db.Integer, db.ForeignKey('subscription_presets.id'), nullable=True)
     expired_preset = db.relationship('SubscriptionPreset', foreign_keys=[expired_preset_id])
-    
+
+    # Auto-select settings (конфиг с id 0, автоматически выбирает самый быстрый доступный)
+    auto_select_enabled = db.Column(db.Boolean, default=False)
+    auto_select_ping_timeout_ms = db.Column(db.Integer, default=2000)      # таймаут пинга конфига, мс
+    auto_select_ping_interval_sec = db.Column(db.Integer, default=60)     # как часто перепроверять пинги, сек
+    auto_select_ping_tolerance_ms = db.Column(db.Integer, default=50)     # допустимая разница пинга: если новый быстрее текущего менее чем на это значение — не переключаться
+    auto_select_min_uptime_pct = db.Column(db.Integer, default=90)        # минимальный uptime конфига за последние N проверок, %
+    auto_select_history_checks = db.Column(db.Integer, default=10)        # сколько последних проверок учитывать для uptime
+
     updated_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc), onupdate=datetime.now(tz=timezone.utc))
     
     @classmethod
@@ -350,6 +358,60 @@ class GlobalSettings(db.Model):
             'happ_routing_config': self.happ_routing_config,
             'expired_sub_enabled': self.expired_sub_enabled,
             'expired_preset_id': self.expired_preset_id,
+            'auto_select_enabled': self.auto_select_enabled,
+            'auto_select_ping_timeout_ms': self.auto_select_ping_timeout_ms,
+            'auto_select_ping_interval_sec': self.auto_select_ping_interval_sec,
+            'auto_select_ping_tolerance_ms': self.auto_select_ping_tolerance_ms,
+            'auto_select_min_uptime_pct': self.auto_select_min_uptime_pct,
+            'auto_select_history_checks': self.auto_select_history_checks,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class AutoSelectRule(db.Model):
+    """Fallback-уровень автовыбора конфигов.
+
+    Правила применяются по убыванию priority: сначала автовыбор пытается
+    выбрать самый быстрый доступный конфиг среди конфигов, подходящих
+    под селекторы уровня 1; если таких нет (все недоступны) — переходит
+    к следующему уровню и т.д. Последним неявным уровнем всегда являются
+    все конфиги, не попавшие в выборку предыдущих уровней.
+    """
+
+    __tablename__ = 'auto_select_rules'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+
+    # Селекторы по тегам (подстроки в имени/теге конфига, comma-separated)
+    include_tags = db.Column(db.Text, nullable=True)   # конфиг должен содержать хотя бы один из тегов
+    exclude_tags = db.Column(db.Text, nullable=True)   # конфиг не должен содержать ни один из тегов
+
+    priority = db.Column(db.Integer, default=100)  # больше = раньше применяется
+    is_active = db.Column(db.Boolean, default=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc))
+    updated_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc), onupdate=datetime.now(tz=timezone.utc))
+
+    def get_include_tags(self):
+        """Список тегов включения."""
+        return [t.strip() for t in (self.include_tags or '').split(',') if t.strip()]
+
+    def get_exclude_tags(self):
+        """Список тегов исключения."""
+        return [t.strip() for t in (self.exclude_tags or '').split(',') if t.strip()]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'include_tags': self.include_tags,
+            'exclude_tags': self.exclude_tags,
+            'priority': self.priority,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 

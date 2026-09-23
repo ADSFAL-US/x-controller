@@ -13,7 +13,7 @@ from typing import List
 from flask import Flask, jsonify, request, render_template_string, redirect, url_for, session
 
 from app.xui_client import XUIClient
-from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
+from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, AutoSelectRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -74,6 +74,12 @@ with app.app_context():
                 ('happ_routing_config', 'TEXT'),
                 ('expired_sub_enabled', 'BOOLEAN DEFAULT 0'),
                 ('expired_preset_id', 'INTEGER'),
+                ('auto_select_enabled', 'BOOLEAN DEFAULT 0'),
+                ('auto_select_ping_timeout_ms', 'INTEGER DEFAULT 2000'),
+                ('auto_select_ping_interval_sec', 'INTEGER DEFAULT 60'),
+                ('auto_select_ping_tolerance_ms', 'INTEGER DEFAULT 50'),
+                ('auto_select_min_uptime_pct', 'INTEGER DEFAULT 90'),
+                ('auto_select_history_checks', 'INTEGER DEFAULT 10'),
             ]
             
             for col_name, col_type in migrations:
@@ -141,6 +147,28 @@ with app.app_context():
                     logger.info("Migration: created config_transform_rules table")
                 except OperationalError as e:
                     logger.warning(f"Migration: config_transform_rules table may already exist: {e}")
+                    db.session.rollback()
+
+            # Migration: Create auto_select_rules table if not exists
+            if 'auto_select_rules' not in existing_tables:
+                try:
+                    db.session.execute(text("""
+                        CREATE TABLE IF NOT EXISTS auto_select_rules (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name VARCHAR(100) NOT NULL,
+                            description TEXT,
+                            include_tags TEXT,
+                            exclude_tags TEXT,
+                            priority INTEGER DEFAULT 100,
+                            is_active BOOLEAN DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    db.session.commit()
+                    logger.info("Migration: created auto_select_rules table")
+                except OperationalError as e:
+                    logger.warning(f"Migration: auto_select_rules table may already exist: {e}")
                     db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
@@ -299,6 +327,7 @@ def index():
             <a href="/subscriptions/new">Create Subscription</a>
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
+            <a href="/auto-select">Auto Select</a>
             <a href="/settings">Settings</a>
             <a href="/api/health">API Health</a>
             <a href="/logout" style="float:right;">Logout</a>
@@ -416,6 +445,7 @@ def list_subscriptions():
             <a href="/">Dashboard</a>
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
+            <a href="/auto-select">Auto Select</a>
             <a href="/subscriptions/new" class="btn">Create New</a>
             <button onclick="syncAll()" class="btn btn-orange" style="padding: 10px 20px; border: none; cursor: pointer; border-radius: 4px;">Sync All</button>
             <a href="/logout" style="float:right;">Logout</a>
@@ -2905,6 +2935,280 @@ document.addEventListener('DOMContentLoaded', function() {
 """
 
 
+@app.route('/auto-select')
+@require_auth
+def auto_select_settings():
+    """Настройки автовыбора: fallback-уровни по селекторам + параметры пинга."""
+    settings = GlobalSettings.get()
+    rules = AutoSelectRule.query.order_by(
+        AutoSelectRule.priority.desc(),
+        AutoSelectRule.created_at.desc()
+    ).all()
+
+    rows = ""
+    for rule in rules:
+        status_badge = '<span style="color: green;">Active</span>' if rule.is_active else '<span style="color: gray;">Inactive</span>'
+        include_tags = ', '.join(rule.get_include_tags()) or '-'
+        exclude_tags = ', '.join(rule.get_exclude_tags()) or '-'
+
+        rows += f"""
+        <tr>
+            <td>{rule.id}</td>
+            <td><strong>{rule.name}</strong></td>
+            <td><code>{include_tags}</code></td>
+            <td><code>{exclude_tags}</code></td>
+            <td>{rule.priority}</td>
+            <td>{status_badge}</td>
+            <td>
+                <a href="/auto-select/{rule.id}/edit">Edit</a>
+                <form method="POST" action="/auto-select/{rule.id}/delete" style="display:inline;">
+                    <button type="submit" onclick="return confirm('Delete rule?')">Delete</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    enabled_checked = 'checked' if settings.auto_select_enabled else ''
+
+    return render_template_string(f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Auto Select - 3x-controller</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }}
+        th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+        th {{ background-color: #f5f5f5; }}
+        .nav {{ margin: 20px 0; }}
+        .nav a {{ margin-right: 20px; text-decoration: none; color: #007bff; }}
+        .btn {{ padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; }}
+        code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }}
+        .form-group {{ margin: 15px 0; }}
+        label {{ display: block; font-weight: bold; margin-bottom: 5px; }}
+        input[type="text"], input[type="number"] {{ width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }}
+        button {{ padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }}
+        .help {{ font-size: 12px; color: #666; margin-top: 4px; }}
+        .settings-box {{ padding: 20px; border: 1px solid #ddd; border-radius: 8px; margin: 20px 0; background: #fafafa; }}
+        h2 {{ margin-top: 30px; }}
+    </style>
+    </head>
+    <body>
+        <h1>Auto Select Settings</h1>
+        <p style="color: #666;">
+            Автовыбор — виртуальный конфиг с id 0, который всегда идёт первым в подписке.
+            Клиент автоматически подключается к самому быстрому доступному конфигу,
+            проходя fallback-уровни по селекторам (тегам).
+        </p>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/subscriptions">Subscriptions</a>
+            <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
+            <a href="/settings">Settings</a>
+            <a href="/auto-select/new" class="btn">Create New Rule</a>
+            <a href="/logout" style="float:right;">Logout</a>
+        </div>
+
+        <div class="settings-box">
+            <h2 style="margin-top:0;">General</h2>
+            <form method="POST" action="/auto-select/settings">
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="auto_select_enabled" {enabled_checked} style="width:auto;">
+                        Enable Auto Select (добавлять конфиг автовыбора с id 0 в подписки)
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>Ping Timeout (ms):</label>
+                    <input type="number" name="auto_select_ping_timeout_ms" value="{{ settings.auto_select_ping_timeout_ms or 2000 }}" min="100" step="100">
+                    <div class="help">Таймаут проверки доступности одного конфига. Конфигы с пингом выше таймаута считаются недоступными.</div>
+                </div>
+                <div class="form-group">
+                    <label>Recheck Interval (sec):</label>
+                    <input type="number" name="auto_select_ping_interval_sec" value="{{ settings.auto_select_ping_interval_sec or 60 }}" min="10" step="10">
+                    <div class="help">Как часто перепроверять доступность и скорость конфигов.</div>
+                </div>
+                <div class="form-group">
+                    <label>Ping Tolerance (ms):</label>
+                    <input type="number" name="auto_select_ping_tolerance_ms" value="{{ settings.auto_select_ping_tolerance_ms or 50 }}" min="0" step="10">
+                    <div class="help">Допустимая разница в пинге: если новый конфиг быстрее текущего менее чем на это значение — переключение не выполняется (защита от постоянных переподключений).</div>
+                </div>
+                <div class="form-group">
+                    <label>Min Uptime (%):</label>
+                    <input type="number" name="auto_select_min_uptime_pct" value="{{ settings.auto_select_min_uptime_pct or 90 }}" min="0" max="100" step="5">
+                    <div class="help">Минимальный процент успешных проверок доступности, чтобы конфиг считался стабильным кандидатом.</div>
+                </div>
+                <div class="form-group">
+                    <label>Uptime History (checks):</label>
+                    <input type="number" name="auto_select_history_checks" value="{{ settings.auto_select_history_checks or 10 }}" min="2" max="100">
+                    <div class="help">Сколько последних проверок учитывать при расчёте uptime.</div>
+                </div>
+                <button type="submit">Save Settings</button>
+            </form>
+        </div>
+
+        <h2>Fallback Rules</h2>
+        <p style="color: #666;">
+            Правила применяются по убыванию приоритета. Сначала автовыбор ищет самый быстрый доступный конфиг
+            среди подходящих под селекторы правила 1; если таких нет — переходит к правилу 2 и т.д.
+            Последним неявным уровнем всегда остаются все конфиги, не попавшие в выборку предыдущих уровней.
+        </p>
+        <table>
+            <tr>
+                <th>ID</th><th>Name</th><th>Include Tags</th><th>Exclude Tags</th>
+                <th>Priority</th><th>Status</th><th>Actions</th>
+            </tr>
+            {rows}
+        </table>
+    </body>
+    </html>
+    """)
+
+
+@app.route('/auto-select/settings', methods=['POST'])
+@require_auth
+def auto_select_settings_save():
+    """Сохранение общих настроек автовыбора."""
+    settings = GlobalSettings.get()
+    settings.auto_select_enabled = request.form.get('auto_select_enabled') == 'on'
+    settings.auto_select_ping_timeout_ms = int(request.form.get('auto_select_ping_timeout_ms', 2000) or 2000)
+    settings.auto_select_ping_interval_sec = int(request.form.get('auto_select_ping_interval_sec', 60) or 60)
+    settings.auto_select_ping_tolerance_ms = int(request.form.get('auto_select_ping_tolerance_ms', 50) or 50)
+    settings.auto_select_min_uptime_pct = int(request.form.get('auto_select_min_uptime_pct', 90) or 90)
+    settings.auto_select_history_checks = int(request.form.get('auto_select_history_checks', 10) or 10)
+    db.session.commit()
+    return redirect('/auto-select')
+
+
+AUTO_SELECT_RULE_FORM = """
+<!DOCTYPE html>
+<html>
+<head><title>Auto Select Rule - 3x-controller</title>
+<style>
+    body { font-family: Arial, sans-serif; margin: 40px; max-width: 700px; }
+    h1 { color: #333; }
+    .nav { margin: 20px 0; }
+    .nav a { margin-right: 20px; text-decoration: none; color: #007bff; }
+    .form-group { margin: 15px 0; }
+    label { display: block; font-weight: bold; margin-bottom: 5px; }
+    input[type="text"], input[type="number"], textarea {
+        width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;
+    }
+    button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .help { font-size: 12px; color: #666; margin-top: 4px; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+</style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <div class="nav"><a href="/auto-select">&larr; Back to Auto Select</a></div>
+    <form method="POST">
+        <div class="form-group">
+            <label>Rule Name:</label>
+            <input type="text" name="name" value="{{ rule.name or '' }}" required>
+        </div>
+        <div class="form-group">
+            <label>Description:</label>
+            <input type="text" name="description" value="{{ rule.description or '' }}">
+        </div>
+        <div class="form-group">
+            <label>Include Tags (comma-separated):</label>
+            <input type="text" name="include_tags" value="{{ include_tags or '' }}" placeholder="stable, premium">
+            <div class="help">Конфиг должен содержать в имени/теге хотя бы один из этих тегов. Пусто = подходят все.</div>
+        </div>
+        <div class="form-group">
+            <label>Exclude Tags (comma-separated):</label>
+            <input type="text" name="exclude_tags" value="{{ exclude_tags or '' }}" placeholder="warp, blocker">
+            <div class="help">Конфиг не должен содержать ни один из этих тегов (например: глушилки, warp).</div>
+        </div>
+        <div class="form-group">
+            <label>Priority:</label>
+            <input type="number" name="priority" value="{{ rule.priority or 100 }}">
+            <div class="help">Больше = раньше применяется. Правила с одинаковым приоритетом применяются в порядке создания.</div>
+        </div>
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="is_active" {{ active_checked }} style="width:auto;">
+                Active
+            </label>
+        </div>
+        <button type="submit">Save Rule</button>
+    </form>
+</body>
+</html>
+"""
+
+
+@app.route('/auto-select/new', methods=['GET', 'POST'])
+@require_auth
+def auto_select_rule_new():
+    """Создание нового правила автовыбора."""
+    if request.method == 'POST':
+        rule = AutoSelectRule(
+            name=request.form.get('name', ''),
+            description=request.form.get('description', ''),
+            include_tags=request.form.get('include_tags', ''),
+            exclude_tags=request.form.get('exclude_tags', ''),
+            priority=int(request.form.get('priority', 100) or 100),
+            is_active=request.form.get('is_active') == 'on'
+        )
+        db.session.add(rule)
+        db.session.commit()
+        return redirect('/auto-select')
+
+    return render_template_string(AUTO_SELECT_RULE_FORM,
+        title='New Auto Select Rule',
+        rule=AutoSelectRule(),
+        include_tags='',
+        exclude_tags='',
+        active_checked='checked')
+
+
+@app.route('/auto-select/<int:rule_id>/edit', methods=['GET', 'POST'])
+@require_auth
+def auto_select_rule_edit(rule_id):
+    """Редактирование правила автовыбора."""
+    rule = AutoSelectRule.query.get_or_404(rule_id)
+
+    if request.method == 'POST':
+        rule.name = request.form.get('name', '')
+        rule.description = request.form.get('description', '')
+        rule.include_tags = request.form.get('include_tags', '')
+        rule.exclude_tags = request.form.get('exclude_tags', '')
+        rule.priority = int(request.form.get('priority', 100) or 100)
+        rule.is_active = request.form.get('is_active') == 'on'
+        db.session.commit()
+        return redirect('/auto-select')
+
+    return render_template_string(AUTO_SELECT_RULE_FORM,
+        title=f'Edit Auto Select Rule: {rule.name}',
+        rule=rule,
+        include_tags=rule.include_tags or '',
+        exclude_tags=rule.exclude_tags or '',
+        active_checked='checked' if rule.is_active else '')
+
+
+@app.route('/auto-select/<int:rule_id>/delete', methods=['POST'])
+@require_auth
+def auto_select_rule_delete(rule_id):
+    """Удаление правила автовыбора."""
+    rule = AutoSelectRule.query.get_or_404(rule_id)
+    db.session.delete(rule)
+    db.session.commit()
+    return redirect('/auto-select')
+
+
+@app.route('/api/auto-select/rules', methods=['GET'])
+@require_auth
+def api_auto_select_rules():
+    """API: список правил автовыбора."""
+    rules = AutoSelectRule.query.order_by(
+        AutoSelectRule.priority.desc(),
+        AutoSelectRule.created_at.desc()
+    ).all()
+    return jsonify([r.to_dict() for r in rules])
+
+
 @app.route('/settings', methods=['GET', 'POST'])
 @require_auth
 def global_settings():
@@ -2982,6 +3286,7 @@ def global_settings():
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
+            <a href="/auto-select">Auto Select</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>
         
@@ -3248,6 +3553,7 @@ def presets_ui():
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
+            <a href="/auto-select">Auto Select</a>
             <a href="/settings">Settings</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>

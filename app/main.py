@@ -1702,7 +1702,7 @@ def apply_transforms_to_uri(uri_str: str, transforms: list) -> str:
                         extra[field] = value
             else:
                 extra.pop(field, None)
-            parsed['params']['extra'] = json.dumps(extra, ensure_ascii=False, separators=('.', ':'))
+            parsed['params']['extra'] = json.dumps(extra, ensure_ascii=False, separators=(',', ':'))
         else:
             # All other fields (sc*, mode, host, path, etc.) → flat query params
             if value:

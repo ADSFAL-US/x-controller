@@ -317,6 +317,7 @@ class GlobalSettings(db.Model):
 
     # Auto-select settings (конфиг с id 0, автоматически выбирает самый быстрый доступный)
     auto_select_enabled = db.Column(db.Boolean, default=False)
+    auto_select_tag_name = db.Column(db.String(100), nullable=True)       # имя автоселект-конфига в подписке
     auto_select_ping_timeout_ms = db.Column(db.Integer, default=2000)      # таймаут пинга конфига, мс
     auto_select_ping_interval_sec = db.Column(db.Integer, default=60)     # как часто перепроверять пинги, сек
     auto_select_ping_tolerance_ms = db.Column(db.Integer, default=50)     # допустимая разница пинга: если новый быстрее текущего менее чем на это значение — не переключаться
@@ -359,6 +360,7 @@ class GlobalSettings(db.Model):
             'expired_sub_enabled': self.expired_sub_enabled,
             'expired_preset_id': self.expired_preset_id,
             'auto_select_enabled': self.auto_select_enabled,
+            'auto_select_tag_name': self.auto_select_tag_name,
             'auto_select_ping_timeout_ms': self.auto_select_ping_timeout_ms,
             'auto_select_ping_interval_sec': self.auto_select_ping_interval_sec,
             'auto_select_ping_tolerance_ms': self.auto_select_ping_tolerance_ms,

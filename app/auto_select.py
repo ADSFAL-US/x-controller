@@ -184,6 +184,7 @@ def build_auto_select_config(all_uris, rules, gsettings):
 
     config = {
         'log': {'loglevel': 'warning'},
+        # comment: автоселект-конфиг, полный JSON доступен по ?format=xray
         'inbounds': [
             {
                 'tag': 'in',

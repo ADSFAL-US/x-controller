@@ -76,6 +76,7 @@ with app.app_context():
                 ('expired_sub_enabled', 'BOOLEAN DEFAULT 0'),
                 ('expired_preset_id', 'INTEGER'),
                 ('auto_select_enabled', 'BOOLEAN DEFAULT 0'),
+                ('auto_select_tag_name', 'VARCHAR(100)'),
                 ('auto_select_ping_timeout_ms', 'INTEGER DEFAULT 2000'),
                 ('auto_select_ping_interval_sec', 'INTEGER DEFAULT 60'),
                 ('auto_select_ping_tolerance_ms', 'INTEGER DEFAULT 50'),
@@ -1408,6 +1409,26 @@ def subscription_link(token):
             auto_select_json, as_count = build_auto_select_config(all_uris, as_rules, gsettings)
             if auto_select_json:
                 logger.info(f"Auto-select config built: {as_count} outbounds, {len(as_rules)} fallback rules")
+                # Вставляем автоселект-конфиг первым в подписку (id 0).
+                # Это vless-ссылка на самый приоритетный конфиг с именем-тегом:
+                # клиенты без поддержки Xray-балансера используют её как обычный конфиг,
+                # а имя подсказывает пользователю что это автовыбор.
+                tag_name = (gsettings.auto_select_tag_name or '⚡ AUTO SELECT').strip() or '⚡ AUTO SELECT'
+                # Базовая ссылка — fallback-конфиг (самый приоритетный живой кандидат)
+                fallback_tag = auto_select_json['routing']['balancers'][0].get('fallbackTag')
+                base_uri = None
+                for out in auto_select_json['outbounds']:
+                    if out.get('tag') == fallback_tag:
+                        # Находим исходный URI по адресу/порту
+                        for uri in all_uris:
+                            if f"@{out['settings']['address']}:{out['settings']['port']}" in uri:
+                                base_uri = uri
+                                break
+                        break
+                if base_uri:
+                    auto_uri = base_uri.split('#', 1)[0] + '#' + urllib.parse.quote(tag_name)
+                    all_uris.insert(0, auto_uri)
+                    logger.info(f"Auto-select config inserted first in subscription: '{tag_name}'")
             else:
                 logger.info("Auto-select skipped: not enough candidate configs")
         except Exception:
@@ -2991,6 +3012,7 @@ def auto_select_settings():
         """
 
     enabled_checked = 'checked' if settings.auto_select_enabled else ''
+    tag_name = settings.auto_select_tag_name or '⚡ AUTO SELECT'
     ping_timeout = settings.auto_select_ping_timeout_ms or 2000
     ping_interval = settings.auto_select_ping_interval_sec or 60
     ping_tolerance = settings.auto_select_ping_tolerance_ms or 50
@@ -3046,6 +3068,11 @@ def auto_select_settings():
                     </label>
                 </div>
                 <div class="form-group">
+                    <label>Config Name (tag):</label>
+                    <input type="text" name="auto_select_tag_name" value="{tag_name}">
+                    <div class="help">Имя автоселект-конфига в списке подписки (первым, id 0). Например: ⚡ AUTO SELECT, 🤖 Автовыбор, 🚀 Самый быстрый.</div>
+                </div>
+                <div class="form-group">
                     <label>Ping Timeout (ms):</label>
                     <input type="number" name="auto_select_ping_timeout_ms" value="{ping_timeout}" min="100" step="100">
                     <div class="help">Таймаут проверки доступности одного конфига. Конфигы с пингом выше таймаута считаются недоступными.</div>
@@ -3098,6 +3125,7 @@ def auto_select_settings_save():
     """Сохранение общих настроек автовыбора."""
     settings = GlobalSettings.get()
     settings.auto_select_enabled = request.form.get('auto_select_enabled') == 'on'
+    settings.auto_select_tag_name = request.form.get('auto_select_tag_name', '').strip()
     settings.auto_select_ping_timeout_ms = int(request.form.get('auto_select_ping_timeout_ms', 2000) or 2000)
     settings.auto_select_ping_interval_sec = int(request.form.get('auto_select_ping_interval_sec', 60) or 60)
     settings.auto_select_ping_tolerance_ms = int(request.form.get('auto_select_ping_tolerance_ms', 50) or 50)

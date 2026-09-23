@@ -857,14 +857,13 @@ def update_subscription_api(subscription_id):
         sub.total_gb = float(data['total_gb'])
     if 'expiry_days' in data:
         new_expiry_days = int(data['expiry_days'])
-        if new_expiry_days != sub.expiry_days:
-            sub.expiry_days = new_expiry_days
-            # Recalculate absolute expiration timestamp
-            if new_expiry_days > 0:
-                from datetime import timedelta
-                sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
-            else:
-                sub.expire_at = None
+        sub.expiry_days = new_expiry_days
+        # Recalculate absolute expiration timestamp for every explicit update.
+        if new_expiry_days > 0:
+            from datetime import timedelta
+            sub.expire_at = datetime.utcnow() + timedelta(days=new_expiry_days)
+        else:
+            sub.expire_at = None
     if 'enabled' in data:
         sub.enabled = bool(data['enabled'])
     if 'flow' in data:
@@ -879,6 +878,71 @@ def update_subscription_api(subscription_id):
     sync_service.schedule_sync(sub, 'update')
     
     logger.info(f"Updated subscription via API: {sub.email}")
+    
+    return jsonify({
+        'success': True,
+        'subscription': sub.to_dict()
+    })
+
+
+@app.route('/api/subscriptions/<subscription_id>/extend', methods=['POST'])
+@require_auth
+def extend_subscription_api(subscription_id):
+    """Продлить подписку на N дней (REST API).
+
+    В отличие от PUT /api/subscriptions/<id> с expiry_days, который СБРАСЫВАЕТ
+    срок до N дней от текущего момента (и является no-op при том же значении),
+    этот endpoint ДОБАВЛЯЕТ days к текущему сроку действия подписки.
+
+    Ожидает JSON: {"days": <int>} — положительное число дней для добавления.
+    """
+    sub = Subscription.query.get(subscription_id)
+    if not sub:
+        return jsonify({'error': 'Subscription not found'}), 404
+    
+    data = request.get_json() or {}
+    
+    try:
+        extra_days = int(data.get('days', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'days must be an integer'}), 400
+    
+    if extra_days <= 0:
+        return jsonify({'error': 'days must be a positive integer'}), 400
+    
+    from datetime import timedelta
+    
+    # Базовая точка — текущий абсолютный срок, если он ещё в будущем;
+    # иначе (подписка истекла или бессрочная) — текущий момент.
+    now = datetime.utcnow()
+    if sub.expire_at and sub.expire_at > now:
+        base = sub.expire_at
+    elif sub.expiry_days > 0 and not sub.expire_at:
+        # Fallback: рассчитываем от created_at (как в to_xui_client)
+        base = sub.created_at + timedelta(days=sub.expiry_days)
+        if base <= now:
+            base = now
+    else:
+        base = now
+    
+    new_expire_at = base + timedelta(days=extra_days)
+    sub.expire_at = new_expire_at
+    # Обновляем expiry_days так, чтобы to_dict() и fallback-расчёты
+    # согласовывались с новым абсолютным сроком.
+    sub.expiry_days = max(1, (new_expire_at - now).days)
+    
+    sub.sync_status = 'pending'
+    sub.updated_at = now
+    
+    db.session.commit()
+    
+    # Запускаем синхронизацию
+    sync_service.schedule_sync(sub, 'update')
+    
+    logger.info(
+        f"Extended subscription via API: {sub.email} +{extra_days} days "
+        f"(new expire_at={new_expire_at.isoformat()})"
+    )
     
     return jsonify({
         'success': True,

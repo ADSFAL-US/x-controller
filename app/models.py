@@ -1,6 +1,7 @@
 """Database models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
@@ -165,7 +166,7 @@ class Subscription(db.Model):
                 expiry_time = int(self.expire_at.timestamp() * 1000)
             else:
                 # Fallback: calculate from created_at to avoid extending on every sync
-                base_time = self.created_at or datetime.utcnow()
+                base_time = self.created_at or datetime.now(tz=timezone.utc)
                 expiry_date = base_time + timedelta(days=self.expiry_days)
                 expiry_time = int(expiry_date.timestamp() * 1000)
         
@@ -218,8 +219,8 @@ class Subscription(db.Model):
         expiry_days = 0
         if client_data.get('expiryTime'):
             expiry_ts = client_data['expiryTime'] / 1000
-            expiry_date = datetime.fromtimestamp(expiry_ts)
-            days_diff = (expiry_date - datetime.utcnow()).days
+            expiry_date = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
+            days_diff = (expiry_date - datetime.now(tz=timezone.utc)).days
             expiry_days = max(0, days_diff)
         
         # Конвертируем байты обратно в GB
@@ -258,7 +259,7 @@ class SyncLog(db.Model):
     
     error_message = db.Column(db.Text, nullable=True)
     
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc))
     
     def to_dict(self):
         return {
@@ -314,7 +315,7 @@ class GlobalSettings(db.Model):
     expired_preset_id = db.Column(db.Integer, db.ForeignKey('subscription_presets.id'), nullable=True)
     expired_preset = db.relationship('SubscriptionPreset', foreign_keys=[expired_preset_id])
     
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc), onupdate=datetime.now(tz=timezone.utc))
     
     @classmethod
     def get(cls):
@@ -366,7 +367,7 @@ class PanelState(db.Model):
     # JSON snapshot of clients on this panel
     clients_snapshot = db.Column(db.Text, nullable=True)
     
-    last_check_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_check_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc))
     
     def to_dict(self):
         return {
@@ -457,8 +458,8 @@ class ConfigTransformRule(db.Model):
 
     # Status
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc))
+    updated_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc), onupdate=datetime.now(tz=timezone.utc))
 
     def to_dict(self):
         """Convert to dictionary for API responses."""

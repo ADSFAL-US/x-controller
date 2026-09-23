@@ -4,19 +4,18 @@ import json
 import logging
 import random
 import string
-from datetime import datetime
-from typing import Dict, Optional
 import threading
-from threading import Thread
 import time
+from datetime import datetime, timezone
+from threading import Thread
 
 from flask import current_app
 
-from app.models import db, Subscription, SyncLog
+from app.models import Subscription, SyncLog, db
 from app.xui_client import XUIClient
 
 # Global app reference (set during initialization)
-_app = None
+_app: "SyncService | None" = None
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +40,12 @@ def _get_used_short_ids(inbound: dict) -> set:
             for sid in client_short_ids:
                 if sid:
                     used.add(sid)
-    except Exception:
-        pass
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        logger.debug("Error extracting shortIds", exc_info=True)
     return used
 
 
-def _get_available_short_id(inbound: dict) -> Optional[str]:
+def _get_available_short_id(inbound: dict) -> str | None:
     """Get first available shortId from pool that's not used by any client."""
     stream_settings_str = inbound.get('streamSettings', '{}')
     try:
@@ -61,8 +60,8 @@ def _get_available_short_id(inbound: dict) -> Optional[str]:
         for sid in pool:
             if sid and sid not in used:
                 return sid
-    except Exception:
-        pass
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        logger.debug("Error getting available shortId", exc_info=True)
     return None
 
 
@@ -206,7 +205,7 @@ class SyncService:
         elapsed = time.time() - start_time
         logger.info(f"_execute_pending_syncs completed in {elapsed:.2f}s")
     
-    def sync_subscription(self, subscription: Subscription, action: str = 'create') -> Dict:
+    def sync_subscription(self, subscription: Subscription, action: str = 'create') -> dict:
         """
         Sync a single subscription to all panels.
         
@@ -278,8 +277,8 @@ class SyncService:
                                 client_id = client.get('id')
                                 if client_id:
                                     panel.delete_client(inbound_id, client_id)
-                    except (json.JSONDecodeError, TypeError, Exception) as e:
-                        logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}")
+                    except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                        logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}", exc_info=True)
             
             logger.info(f"Panel {panel.config.name}: found {len(inbounds)} inbounds for {subscription.email}")
             
@@ -319,8 +318,8 @@ class SyncService:
                         stream_settings = json.loads(stream_settings_str) if isinstance(stream_settings_str, str) else stream_settings_str or {}
                         is_reality = bool(stream_settings.get('realitySettings'))
                         network = stream_settings.get('network', 'tcp')
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        logger.debug("Error parsing stream settings", exc_info=True)
                     
                     # Auto-determine flow based on transport type
                     if is_reality:
@@ -441,7 +440,7 @@ class SyncService:
                         else:
                             success = True  # Already not in this inbound
                     
-                except Exception as e:
+                except (json.JSONDecodeError, TypeError, AttributeError, KeyError) as e:
                     success = False
                     error_msg = str(e)
                     logger.exception(f"Error syncing to panel {panel.config.name}, inbound {inbound_id}")
@@ -481,14 +480,14 @@ class SyncService:
             failed_panels = [k for k, v in results.items() if not v['success']]
             subscription.sync_error = f"Failed on: {', '.join(failed_panels)}"
         
-        subscription.last_sync_at = datetime.utcnow()
+        subscription.last_sync_at = datetime.now(timezone.utc)
         db.session.commit()
         
         logger.info(f"Completed sync for {subscription.email}: {all_success}")
         return results
     
     def _log_sync(self, subscription: Subscription, panel_name: str, 
-                  action: str, success: bool, error: Optional[str]):
+                  action: str, success: bool, error: str | None):
         """Log a sync attempt."""
         log = SyncLog(
             subscription_id=subscription.id,
@@ -636,8 +635,8 @@ class SyncService:
         
         logger.info("Periodic auto-sync completed")
     
-    def _calculate_panel_diff(self, panel, db_subs_by_uuid: Dict[str, Subscription],
-                                db_subs_by_password: Dict[str, Subscription]) -> Dict:
+    def _calculate_panel_diff(self, panel, db_subs_by_uuid: dict[str, Subscription],
+                                db_subs_by_password: dict[str, Subscription]) -> dict:
         """
         Calculate difference between DB and panel state.
         Returns plan: {'create': [...], 'delete': [...], 'update': [...]}
@@ -780,7 +779,7 @@ class SyncService:
         
         return plan
     
-    def _execute_sync_plan(self, panel, plan: Dict):
+    def _execute_sync_plan(self, panel, plan: dict):
         """
         Execute sync plan with proper ordering:
         0. Cleanup duplicates (remove ALL clients with duplicate subId, will recreate from DB)
@@ -825,8 +824,8 @@ class SyncService:
                         if client_id:
                             panel.delete_client(inbound_id, client_id)
                                 
-            except (json.JSONDecodeError, TypeError, Exception) as e:
-                logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}")
+            except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                logger.debug(f"Cleanup duplicates error for inbound {inbound_id}: {e}", exc_info=True)
         
         # 1. EXECUTE CREATES (highest priority)
         for item in plan['create']:
@@ -994,7 +993,7 @@ class SyncService:
                         break
                     time.sleep(1)
 
-    def _find_client_by_password(self, panel, password: str, inbounds: list) -> Optional[dict]:
+    def _find_client_by_password(self, panel, password: str, inbounds: list) -> dict | None:
         """Find client by Shadowsocks password in list of inbounds.
         
         Args:

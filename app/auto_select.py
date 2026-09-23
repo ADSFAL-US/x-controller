@@ -21,8 +21,22 @@ AUTO_SELECT_TAG_PREFIX = 'as-'
 DEFAULT_PROBE_URL = 'https://connectivitycheck.gstatic.com/generate_204'
 
 
-def _coerce_param(raw: str):
-    """Try to coerce string param to int/float/bool, fallback to string."""
+XHTTP_FLAT_FIELDS = (
+    'path', 'host', 'mode',
+    'scMaxConcurrentPosts', 'scMaxEachPostBytes', 'scMinPostsIntervalMs',
+)
+
+XHTTP_EXTRA_FIELDS = (
+    'scMaxBufferedPosts',
+    'scMaxEachPostBytes', 'scMinPostsIntervalMs',   # дубликаты flat, НЕ сливать!
+    'uplinkHTTPMethod', 'noSSEHeader', 'noGRPCHeader',
+    'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
+    'xPaddingMethod', 'xPaddingObfsMode', 'xPaddingPlacement',
+)
+
+
+def _coerce_param(raw):
+    """'10' -> 10, 'true' -> True, '0-0' -> '0-0' (строка)."""
     if not isinstance(raw, str):
         return raw
     try:
@@ -32,7 +46,7 @@ def _coerce_param(raw: str):
 
 
 def parse_vless_link(link, tag):
-    """Парсит vless:// URI в Xray outbound JSON. Возвращает None при ошибке."""
+    """Парсит vless:// URI в Xray outbound JSON (совместимо с 3x-ui)."""
     try:
         part = link.split('://', 1)[1]
         body = part.split('#', 1)[0]
@@ -41,19 +55,16 @@ def parse_vless_link(link, tag):
         address, port = netloc.rsplit(':', 1)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(query_str).items()}
 
-        settings = {
-            'address': address,
-            'port': int(port),
-            'id': userinfo,
-        }
+        # ── user ──────────────────────────────────────────────
+        user = {'id': userinfo, 'security': 'auto'}
         enc = q.get('encryption')
         if enc and enc != 'none':
-            settings['encryption'] = enc
-
+            user['encryption'] = enc
         flow = q.get('flow')
         if flow:
-            settings['flow'] = flow
+            user['flow'] = flow
 
+        # ── streamSettings ────────────────────────────────────
         stream = {}
         network = q.get('type', 'tcp')
         stream['network'] = network
@@ -73,16 +84,14 @@ def parse_vless_link(link, tag):
             stream['wsSettings'] = ws
 
         elif network in ('xhttp', 'splithttp'):
-            # ─── xHTTP / SplitHTTP ───────────────────────────────
             xhttp = {}
-            if q.get('path'):
-                xhttp['path'] = q['path']
-            if q.get('host'):
-                xhttp['host'] = q['host']
-            if q.get('mode'):
-                xhttp['mode'] = q['mode']
 
-            # Всё «расширенное» живёт в extra (per Xray docs)
+            # ПЛОСКИЕ поля верхнего уровня xhttpSettings
+            for key in XHTTP_FLAT_FIELDS:
+                if key in q:
+                    xhttp[key] = _coerce_param(q[key])
+
+            # ВЛОЖЕННЫЙ extra — только из явного extra= или из legacy-flat
             extra = {}
             extra_str = q.get('extra')
             if extra_str:
@@ -93,16 +102,13 @@ def parse_vless_link(link, tag):
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            # Некоторые 3x-ui сборки/трансформы кладут sc*/xPadding*/uplink*
-            # плоскими query-параметрами — подхватываем их тоже
-            for key in (
-                'scMaxConcurrentPosts', 'scMaxEachPostBytes',
-                'scMinPostsIntervalMs', 'scMaxBufferedPosts',
-                'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
-                'xPaddingMethod', 'xPaddingObfsMode',
-                'uplinkHTTPMethod',
-                'noSSEHeader', 'xPaddingPlacement',
-            ):
+            # Если продюсер (трансформер) записал extra-поля плоско — подберём.
+            # ВАЖНО: НЕ трогаем scMaxEachPostBytes/scMinPostsIntervalMs, они уже
+            # ушли flat выше. Если хочется продублировать их в extra — бери
+            # из q['extra']-JSON, а не из плоских query.
+            for key in XHTTP_EXTRA_FIELDS:
+                if key in ('scMaxEachPostBytes', 'scMinPostsIntervalMs'):
+                    continue  # уже flat
                 if key in q and key not in extra:
                     extra[key] = _coerce_param(q[key])
 
@@ -119,6 +125,7 @@ def parse_vless_link(link, tag):
                 hu['host'] = q['host']
             stream['httpupgradeSettings'] = hu
 
+        # security / reality / tls — как было
         security = q.get('security', '')
         if security == 'reality':
             stream['security'] = 'reality'
@@ -133,19 +140,29 @@ def parse_vless_link(link, tag):
             stream['realitySettings'] = reality
         elif security == 'tls':
             stream['security'] = 'tls'
-            tls = {'serverName': q.get('sni', '')}
+            tls = {}
+            if q.get('sni'):
+                tls['serverName'] = q['sni']
             if q.get('alpn'):
                 tls['alpn'] = q['alpn'].split(',')
             if q.get('fp'):
                 tls['fingerprint'] = q['fp']
             if q.get('allowInsecure') in ('1', 'true', 'True'):
                 tls['allowInsecure'] = True
-            stream['tlsSettings'] = tls
+            if tls:
+                stream['tlsSettings'] = tls
 
+        # ── outbound ──────────────────────────────────────────
         return {
             'tag': tag,
             'protocol': 'vless',
-            'settings': settings,
+            'settings': {
+                'vnext': [{
+                    'address': address,
+                    'port': int(port),
+                    'users': [user],
+                }]
+            },
             'streamSettings': stream,
         }
     except Exception:

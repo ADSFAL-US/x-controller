@@ -1,0 +1,199 @@
+[
+  {
+    "log": {
+      "loglevel": "warning"
+    },
+    "remarks": "⚡ АВТОВЫБОР",
+    "inbounds": [
+      {
+        "tag": "in",
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "udp": true
+        },
+        "sniffing": {
+          "enabled": true,
+          "routeOnly": true
+        }
+      }
+    ],
+    "outbounds": [
+      {
+        "tag": "as-t2-0",
+        "protocol": "vless",
+        "settings": {
+          "address": "server1.com",
+          "port": 443,
+          "id": "uuid1",
+          "flow": "xtls-rprx-vision"
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "server1.com"
+          }
+        }
+      },
+      {
+        "tag": "as-t2-1",
+        "protocol": "vless",
+        "settings": {
+          "address": "server2.com",
+          "port": 443,
+          "id": "uuid2",
+          "flow": "xtls-rprx-vision"
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "server2.com"
+          }
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole"
+      }
+    ],
+    "burstObservatory": {
+      "subjectSelector": [
+        "as-"
+      ],
+      "pingConfig": {
+        "destination": "https://connectivitycheck.gstatic.com/generate_204",
+        "connectivity": "",
+        "interval": "60s",
+        "sampling": 10,
+        "timeout": "2000ms",
+        "httpMethod": "HEAD"
+      }
+    },
+    "routing": {
+      "rules": [
+        {
+          "network": "tcp,udp",
+          "balancerTag": "auto-select"
+        }
+      ],
+      "balancers": [
+        {
+          "tag": "auto-select",
+          "selector": [
+            "as-"
+          ],
+          "strategy": {
+            "type": "leastLoad",
+            "settings": {
+              "expected": 1,
+              "tolerance": 0.1,
+              "costs": [
+                {
+                  "regexp": false,
+                  "match": "as-t2-",
+                  "value": 9
+                }
+              ]
+            }
+          },
+          "fallbackTag": "as-t2-0"
+        }
+      ]
+    }
+  },
+  {
+    "log": {
+      "loglevel": "warning"
+    },
+    "remarks": "",
+    "inbounds": [
+      {
+        "tag": "in",
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "udp": true
+        },
+        "sniffing": {
+          "enabled": true,
+          "routeOnly": true
+        }
+      }
+    ],
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+          "address": "server1.com",
+          "port": 443,
+          "id": "uuid1",
+          "flow": "xtls-rprx-vision"
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "server1.com"
+          }
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      }
+    ]
+  },
+  {
+    "log": {
+      "loglevel": "warning"
+    },
+    "remarks": "",
+    "inbounds": [
+      {
+        "tag": "in",
+        "listen": "127.0.0.1",
+        "port": 10808,
+        "protocol": "socks",
+        "settings": {
+          "udp": true
+        },
+        "sniffing": {
+          "enabled": true,
+          "routeOnly": true
+        }
+      }
+    ],
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+          "address": "server2.com",
+          "port": 443,
+          "id": "uuid2",
+          "flow": "xtls-rprx-vision"
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "server2.com"
+          }
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      }
+    ]
+  }
+]

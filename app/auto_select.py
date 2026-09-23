@@ -14,10 +14,21 @@ mlkem768x25519plus), так что все конфиги работают как
 AutoSelectRule (fallback-уровни по include/exclude тегам).
 """
 
+import json
 import urllib.parse
 
 AUTO_SELECT_TAG_PREFIX = 'as-'
 DEFAULT_PROBE_URL = 'https://connectivitycheck.gstatic.com/generate_204'
+
+
+def _coerce_param(raw: str):
+    """Try to coerce string param to int/float/bool, fallback to string."""
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return raw
 
 
 def parse_vless_link(link, tag):
@@ -35,7 +46,6 @@ def parse_vless_link(link, tag):
             'port': int(port),
             'id': userinfo,
         }
-        # VLESS Encryption (post-quantum) — передаётся как есть
         enc = q.get('encryption')
         if enc and enc != 'none':
             settings['encryption'] = enc
@@ -47,11 +57,13 @@ def parse_vless_link(link, tag):
         stream = {}
         network = q.get('type', 'tcp')
         stream['network'] = network
+
         if network == 'grpc':
             grpc = {'serviceName': q.get('serviceName', '')}
             if q.get('mode') == 'multi':
                 grpc['multiMode'] = True
             stream['grpcSettings'] = grpc
+
         elif network == 'ws':
             ws = {}
             if q.get('path'):
@@ -59,6 +71,53 @@ def parse_vless_link(link, tag):
             if q.get('host'):
                 ws['headers'] = {'Host': q['host']}
             stream['wsSettings'] = ws
+
+        elif network in ('xhttp', 'splithttp'):
+            # ─── xHTTP / SplitHTTP ───────────────────────────────
+            xhttp = {}
+            if q.get('path'):
+                xhttp['path'] = q['path']
+            if q.get('host'):
+                xhttp['host'] = q['host']
+            if q.get('mode'):
+                xhttp['mode'] = q['mode']
+
+            # Всё «расширенное» живёт в extra (per Xray docs)
+            extra = {}
+            extra_str = q.get('extra')
+            if extra_str:
+                try:
+                    parsed_extra = json.loads(extra_str)
+                    if isinstance(parsed_extra, dict):
+                        extra.update(parsed_extra)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Некоторые 3x-ui сборки/трансформы кладут sc*/xPadding*/uplink*
+            # плоскими query-параметрами — подхватываем их тоже
+            for key in (
+                'scMaxConcurrentPosts', 'scMaxEachPostBytes',
+                'scMinPostsIntervalMs', 'scMaxBufferedPosts',
+                'xPaddingBytes', 'xPaddingHeader', 'xPaddingKey',
+                'xPaddingMethod', 'xPaddingObfsMode',
+                'uplinkHTTPMethod',
+                'noSSEHeader', 'xPaddingPlacement',
+            ):
+                if key in q and key not in extra:
+                    extra[key] = _coerce_param(q[key])
+
+            if extra:
+                xhttp['extra'] = extra
+            if xhttp:
+                stream['xhttpSettings'] = xhttp
+
+        elif network == 'httpupgrade':
+            hu = {}
+            if q.get('path'):
+                hu['path'] = q['path']
+            if q.get('host'):
+                hu['host'] = q['host']
+            stream['httpupgradeSettings'] = hu
 
         security = q.get('security', '')
         if security == 'reality':
@@ -77,6 +136,10 @@ def parse_vless_link(link, tag):
             tls = {'serverName': q.get('sni', '')}
             if q.get('alpn'):
                 tls['alpn'] = q['alpn'].split(',')
+            if q.get('fp'):
+                tls['fingerprint'] = q['fp']
+            if q.get('allowInsecure') in ('1', 'true', 'True'):
+                tls['allowInsecure'] = True
             stream['tlsSettings'] = tls
 
         return {
@@ -108,9 +171,7 @@ def _matches_tier(name, rule):
     exclude = [t.lower() for t in rule.get_exclude_tags()]
     if exclude and any(t in name_lower for t in exclude):
         return False
-    if include and not any(t in name_lower for t in include):
-        return False
-    return True
+    return not (include and not any(t in name_lower for t in include))
 
 
 def _build_single_profile(uri, remark):

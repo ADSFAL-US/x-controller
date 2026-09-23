@@ -44,6 +44,8 @@ except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
     print(f'JSON parse issue: {e!r}, treating as base64')
     pad = (-len(raw)) % 4
     uris = [l.strip() for l in base64.b64decode(raw + b'=' * pad).decode().splitlines() if l.strip()]
+    print(f'Извлечено {len(uris)} URI из base64')
+    print(f'Первый URI: {uris[0][:100]}...' if uris else 'Нет URI')
 
 
 class Rule:

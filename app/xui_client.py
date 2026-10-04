@@ -152,6 +152,11 @@ class XUIPanel:
             client["id"] = client_uuid
         elif isinstance(client.get("id"), int):
             client.pop("id", None)
+        allowed_ips = client.get("allowedIPs")
+        if isinstance(allowed_ips, str):
+            client["allowedIPs"] = [
+                address.strip() for address in allowed_ips.split(",") if address.strip()
+            ]
         return client
 
     @classmethod

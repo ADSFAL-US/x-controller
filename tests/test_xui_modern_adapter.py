@@ -187,6 +187,7 @@ class XuiModernAdapterTests(unittest.TestCase):
                         "subId": "stable-sub-id",
                         "flow": "xtls-rprx-vision",
                         "password": "protocol-secret",
+                        "allowedIPs": "10.0.0.2/32, 10.0.0.3/32",
                         "totalGB": 10,
                     },
                     "inboundIds": [3],
@@ -204,6 +205,7 @@ class XuiModernAdapterTests(unittest.TestCase):
         self.assertEqual(posted["subId"], "stable-sub-id")
         self.assertEqual(posted["flow"], "xtls-rprx-vision")
         self.assertEqual(posted["password"], "protocol-secret")
+        self.assertEqual(posted["allowedIPs"], ["10.0.0.2/32", "10.0.0.3/32"])
         self.assertEqual(posted["totalGB"], 20)
         self.assertNotIn("uuid", posted)
 

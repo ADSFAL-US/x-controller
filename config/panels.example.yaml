@@ -1,0 +1,22 @@
+# Copy this file to config/panels.yaml and add your panel credentials.
+panels:
+  - name: panel-1
+    host: https://panel.example.com:2053
+    panel_path: ''
+    sub_path: /sub
+    username: replace-with-panel-username
+    password: replace-with-panel-password
+    priority: 1
+    max_clients: 100
+    legacy: true
+
+  # Modern 3x-ui (v3.1.0+): create an API token in Settings > Security > API Tokens.
+  # - name: modern-panel
+  #   host: https://modern-panel.example.com:2053
+  #   panel_path: /your-panel-path
+  #   sub_host: https://subscription.example.com:2096
+  #   sub_path: /your-configured-sub-path
+  #   legacy: false
+  #   api_token: replace-with-panel-api-token
+  #   priority: 1
+  #   max_clients: 200

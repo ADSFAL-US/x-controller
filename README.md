@@ -56,7 +56,8 @@ User -> Web UI / REST API -> SQLite (source of truth)
 ## Quick Start
 
 ```bash
-# 1. Configure panels
+# 1. Create and configure the local panel settings
+cp config/panels.example.yaml config/panels.yaml
 edit config/panels.yaml
 
 # 2. Run
@@ -67,14 +68,20 @@ sudo bash install.sh
 
 ## Panel API Modes
 
-Each panel can select its 3x-ui API mode in `config/panels.yaml`:
+Each panel can select its 3x-ui API mode in the local `config/panels.yaml`. This file is intentionally untracked because it contains environment-specific panel addresses and credentials. Start from the tracked `config/panels.example.yaml` template:
+
+```bash
+cp config/panels.example.yaml config/panels.yaml
+```
 
 - `legacy: true` uses the existing username/password login and inbound client endpoints for 3x-ui 2.9.x. If `legacy` is omitted, it defaults to `true`.
 - `legacy: false` uses the separate clients API available from 3x-ui 3.1.0. Configure `api_token` with a token created in **Settings > Security > API Tokens**. Authentication is sent as `Authorization: Bearer <token>`; username/password are not used and may be omitted.
 
 Modern panels keep one client entity per subscription and attach it to the panel's inbounds. The adapter generates a panel email for a new client and preserves it on subsequent syncs. Keep API tokens out of source control and restrict access to the panel configuration file.
 
-`panel_path`, `sub_host`, and `sub_path` continue to control panel and subscription URLs in both modes. See `config/panels.yaml` for examples.
+`panel_path`, `sub_host`, and `sub_path` continue to control panel and subscription URLs in both modes. See `config/panels.example.yaml` for examples.
+
+Existing installations need a one-time migration because `config/panels.yaml` was previously tracked. Before pulling this update, make a permission-restricted backup outside the repository, restore the tracked copy so Git can complete the pull, then put the backup back as `config/panels.yaml`. The updated installer preserves this local file on subsequent updates.
 
 ## Sync Behavior
 

@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.local
+config/panels.yaml
 
 # Python
 __pycache__/

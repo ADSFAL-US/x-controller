@@ -114,32 +114,12 @@ EOF
         log_success "Port updated to: $CONTROLLER_PORT"
     fi
     
-    # Создаем config директорию с примером если нет
+    # Создаем локальную конфигурацию панелей из отслеживаемого шаблона
     if [ ! -f "$INSTALL_DIR/config/panels.yaml" ]; then
         mkdir -p "$INSTALL_DIR/config"
-        cat > "$INSTALL_DIR/config/panels.yaml" << 'EOF'
-panels:
-  - name: panel-1
-    host: http://localhost:2053
-    panel_path: ''
-    sub_path: /sub
-    username: admin
-    password: admin
-    priority: 1
-    max_clients: 100
-
-  # Пример с секретным путем и отдельным хостом для подписок:
-  # - name: panel-2
-  #   host: https://panel.example.com:2053
-  #   panel_path: /secret-path
-  #   sub_host: https://sub.example.com:8080
-  #   sub_path: /avava-vpn
-  #   username: admin
-  #   password: secret
-  #   priority: 2
-  #   max_clients: 200
-EOF
-        log_info "Создан пример config/panels.yaml - отредактируйте под ваши панели"
+        cp "$INSTALL_DIR/config/panels.example.yaml" "$INSTALL_DIR/config/panels.yaml"
+        chmod 600 "$INSTALL_DIR/config/panels.yaml"
+        log_info "Создан config/panels.yaml из шаблона - отредактируйте под ваши панели"
     fi
     
     log_info "Сборка..."
@@ -156,6 +136,15 @@ update_existing() {
     log_info "Обновление существующей установки"
     
     cd "$INSTALL_DIR"
+
+    # Preserve a locally customized panel config while the tracked template is removed.
+    local panel_config_backup=""
+    if [ -f "$INSTALL_DIR/config/panels.yaml" ] && \
+       git ls-files --error-unmatch config/panels.yaml >/dev/null 2>&1; then
+        panel_config_backup="$(mktemp -d)"
+        cp -p "$INSTALL_DIR/config/panels.yaml" "$panel_config_backup/panels.yaml"
+        git show HEAD:config/panels.yaml > "$INSTALL_DIR/config/panels.yaml"
+    fi
     
     log_info "Остановка..."
     docker compose down
@@ -163,9 +152,25 @@ update_existing() {
     # Обновляем из репозитория
     if [ -d "$INSTALL_DIR/.git" ]; then
         log_info "Обновление из репозитория..."
-        git pull origin master
+        if ! git pull origin master; then
+            if [ -n "$panel_config_backup" ]; then
+                cp -p "$panel_config_backup/panels.yaml" "$INSTALL_DIR/config/panels.yaml"
+                rm -f "$panel_config_backup/panels.yaml"
+                rmdir "$panel_config_backup"
+            fi
+            return 1
+        fi
     else
         log_warning "Не найден git репозиторий, пропускаем обновление кода"
+    fi
+
+    if [ -n "$panel_config_backup" ]; then
+        cp -p "$panel_config_backup/panels.yaml" "$INSTALL_DIR/config/panels.yaml"
+        rm -f "$panel_config_backup/panels.yaml"
+        rmdir "$panel_config_backup"
+    elif [ ! -f "$INSTALL_DIR/config/panels.yaml" ]; then
+        cp "$INSTALL_DIR/config/panels.example.yaml" "$INSTALL_DIR/config/panels.yaml"
+        chmod 600 "$INSTALL_DIR/config/panels.yaml"
     fi
     
     log_info "Пересборка..."

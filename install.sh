@@ -137,26 +137,44 @@ update_existing() {
     
     cd "$INSTALL_DIR"
 
-    # Preserve a locally customized panel config while the tracked template is removed.
+    # Back up local files that would otherwise block this self-update.
+    local update_backup=""
     local panel_config_backup=""
+    local installer_backup=""
+    if { [ -f "$INSTALL_DIR/config/panels.yaml" ] && \
+         git ls-files --error-unmatch config/panels.yaml >/dev/null 2>&1; } || \
+       ! git diff --quiet HEAD -- install.sh; then
+        mkdir -p "$INSTALL_DIR/data"
+        update_backup="$(mktemp -d "$INSTALL_DIR/data/update-backup.XXXXXX")"
+        chmod 700 "$update_backup"
+    fi
+
     if [ -f "$INSTALL_DIR/config/panels.yaml" ] && \
        git ls-files --error-unmatch config/panels.yaml >/dev/null 2>&1; then
-        panel_config_backup="$(mktemp -d)"
-        cp -p "$INSTALL_DIR/config/panels.yaml" "$panel_config_backup/panels.yaml"
+        panel_config_backup="$update_backup/panels.yaml"
+    cp -p "$INSTALL_DIR/config/panels.yaml" "$panel_config_backup"
         git show HEAD:config/panels.yaml > "$INSTALL_DIR/config/panels.yaml"
     fi
-    
-    log_info "Остановка..."
-    docker compose down
+
+    if ! git diff --quiet HEAD -- install.sh; then
+        installer_backup="$update_backup/install.sh.local"
+        cp -p "$INSTALL_DIR/install.sh" "$installer_backup"
+        git show HEAD:install.sh > "$INSTALL_DIR/install.sh"
+    fi
     
     # Обновляем из репозитория
     if [ -d "$INSTALL_DIR/.git" ]; then
         log_info "Обновление из репозитория..."
-        if ! git pull origin master; then
+        if ! git pull --ff-only origin master; then
             if [ -n "$panel_config_backup" ]; then
-                cp -p "$panel_config_backup/panels.yaml" "$INSTALL_DIR/config/panels.yaml"
-                rm -f "$panel_config_backup/panels.yaml"
-                rmdir "$panel_config_backup"
+                cp -p "$panel_config_backup" "$INSTALL_DIR/config/panels.yaml"
+            fi
+            if [ -n "$installer_backup" ]; then
+                cp -p "$installer_backup" "$INSTALL_DIR/install.sh"
+            fi
+            if [ -n "$update_backup" ]; then
+                rm -f "$update_backup/panels.yaml" "$update_backup/install.sh.local"
+                rmdir "$update_backup"
             fi
             return 1
         fi
@@ -165,12 +183,25 @@ update_existing() {
     fi
 
     if [ -n "$panel_config_backup" ]; then
-        cp -p "$panel_config_backup/panels.yaml" "$INSTALL_DIR/config/panels.yaml"
-        rm -f "$panel_config_backup/panels.yaml"
-        rmdir "$panel_config_backup"
+        cp -p "$panel_config_backup" "$INSTALL_DIR/config/panels.yaml"
     elif [ ! -f "$INSTALL_DIR/config/panels.yaml" ]; then
         cp "$INSTALL_DIR/config/panels.example.yaml" "$INSTALL_DIR/config/panels.yaml"
         chmod 600 "$INSTALL_DIR/config/panels.yaml"
+    fi
+
+    log_info "Остановка..."
+    docker compose down
+
+    if [ -n "$installer_backup" ]; then
+        log_warning "Локальная версия install.sh сохранена для сравнения: $installer_backup"
+        if [ -n "$panel_config_backup" ]; then
+            rm -f "$panel_config_backup"
+        fi
+    elif [ -n "$update_backup" ]; then
+        if [ -n "$panel_config_backup" ]; then
+            rm -f "$panel_config_backup"
+        fi
+        rmdir "$update_backup"
     fi
     
     log_info "Пересборка..."

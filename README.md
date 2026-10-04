@@ -81,7 +81,28 @@ Modern panels keep one client entity per subscription and attach it to the panel
 
 `panel_path`, `sub_host`, and `sub_path` continue to control panel and subscription URLs in both modes. See `config/panels.example.yaml` for examples.
 
-Existing installations need a one-time migration because `config/panels.yaml` was previously tracked. Before pulling this update, make a permission-restricted backup outside the repository, restore the tracked copy so Git can complete the pull, then put the backup back as `config/panels.yaml`. The updated installer preserves this local file on subsequent updates.
+Existing installations need a one-time migration because `config/panels.yaml` was previously tracked. The old installer may stop the container and then fail its pull when either it or `panels.yaml` has local edits. Run this once on the server to back up both files, restore their tracked versions, pull the update, and put the production config back:
+
+```bash
+cd /opt/3x-controller
+backup_dir=$(mktemp -d)
+chmod 700 "$backup_dir"
+cp -p config/panels.yaml "$backup_dir/panels.yaml"
+cp -p install.sh "$backup_dir/install.sh"
+git restore --source=HEAD --staged --worktree -- config/panels.yaml install.sh
+if git pull --ff-only origin master; then
+        cp -p "$backup_dir/panels.yaml" config/panels.yaml
+        chmod 600 config/panels.yaml
+        echo "Local install.sh backup: $backup_dir/install.sh"
+else
+        cp -p "$backup_dir/panels.yaml" config/panels.yaml
+        cp -p "$backup_dir/install.sh" install.sh
+        echo "Update failed; original files were restored. Backup: $backup_dir"
+        exit 1
+fi
+```
+
+Review the backed-up `install.sh` for any intentional server-specific edits. Subsequent updates preserve `panels.yaml`, keep the service running if Git refuses the update, and retain any local installer version in `data/update-backup.*` for comparison.
 
 ## Sync Behavior
 

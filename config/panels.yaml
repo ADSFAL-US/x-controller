@@ -13,6 +13,8 @@ panels:
     password: admin
     priority: 1
     max_clients: 100
+    # true = existing 2.9.x API; omitted legacy also defaults to true
+    legacy: true
 
   # Пример второй панели с секретным путем и кастомной подпиской:
   # - name: panel-2
@@ -23,4 +25,16 @@ panels:
   #   username: admin
   #   password: secret
   #   priority: 2
+  #   max_clients: 200
+
+  # Modern 3x-ui (v3.1.0+): clients are managed through the clients API.
+  # Create an API token in Settings > Security > API Tokens and keep it secret.
+  # - name: modern-panel
+  #   host: https://panel.example.com:2053
+  #   panel_path: /your-panel-path
+  #   sub_host: https://sub.example.com:2096
+  #   sub_path: /your-configured-sub-path
+  #   legacy: false
+  #   api_token: replace-with-panel-api-token
+  #   priority: 1
   #   max_clients: 200

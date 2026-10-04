@@ -9,6 +9,7 @@ import logging
 import threading
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,15 @@ class PanelConfig:
     """Конфигурация панели."""
     name: str
     host: str  # Базовый хост для API панели, например https://panel.example.com:2053
-    username: str
-    password: str
+    username: str = ''
+    password: str = ''
     priority: int = 1
     max_clients: int = 100
     panel_path: str = ''  # Путь к панели API, например /secret-path
     sub_host: str = ''  # Отдельный хост для подписок (если отличается от host)
     sub_path: str = '/sub'  # Путь к подписке
+    legacy: bool = True
+    api_token: str = ''
 
 
 class XUIPanel:
@@ -55,6 +58,29 @@ class XUIPanel:
         Авторизоваться в панели 3x-ui.
         POST {panel_path}/login
         """
+        if not self.config.legacy:
+            if not self.config.api_token:
+                logger.error("Для modern панели %s не задан api_token", self.config.name)
+                return False
+
+            try:
+                self.session.headers["Authorization"] = f"Bearer {self.config.api_token}"
+                response = self.session.get(
+                    self._modern_api_url("inbounds/list"), timeout=30
+                )
+                if response.status_code == 200 and response.json().get("success"):
+                    logger.info("Успешная авторизация в modern панели %s", self.config.name)
+                    return True
+                logger.error(
+                    "Ошибка авторизации modern панели %s: HTTP %s",
+                    self.config.name,
+                    response.status_code,
+                )
+                return False
+            except Exception as e:
+                logger.error("Ошибка подключения к панели %s: %s", self.config.name, e)
+                return False
+
         try:
             url = f"{self.config.host}{self.config.panel_path}/login"
             data = {
@@ -77,6 +103,134 @@ class XUIPanel:
         except Exception as e:
             logger.error(f"Ошибка подключения к панели {self.config.name}: {e}")
             return False
+
+    def _modern_api_url(self, endpoint: str) -> str:
+        return (
+            f"{self.config.host.rstrip('/')}{self.config.panel_path.rstrip('/')}/"
+            f"panel/api/{endpoint.lstrip('/')}"
+        )
+
+    def _modern_request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict[str, Any]]:
+        if not self.config.api_token:
+            logger.error("Для modern панели %s не задан api_token", self.config.name)
+            return None
+
+        try:
+            self.session.headers["Authorization"] = f"Bearer {self.config.api_token}"
+            response = self.session.request(
+                method, self._modern_api_url(endpoint), timeout=30, **kwargs
+            )
+            if response.status_code != 200:
+                logger.error(
+                    "Modern API %s %s вернул HTTP %s: %s",
+                    method,
+                    endpoint,
+                    response.status_code,
+                    response.text[:200],
+                )
+                return None
+
+            result = response.json()
+            if not result.get("success"):
+                logger.error("Modern API %s %s вернул success=false: %s", method, endpoint, result)
+                return None
+            return result
+        except Exception as e:
+            logger.error("Ошибка modern API %s %s: %s", method, endpoint, e)
+            return None
+
+    @staticmethod
+    def _modern_client_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+        client = record.get("client", record)
+        if not isinstance(client, dict):
+            return {}
+        client = dict(client)
+        client.pop("inboundIds", None)
+        client.pop("traffic", None)
+        client_uuid = client.pop("uuid", None)
+        if client_uuid:
+            client["id"] = client_uuid
+        elif isinstance(client.get("id"), int):
+            client.pop("id", None)
+        return client
+
+    @classmethod
+    def _modern_client_record(cls, record: Dict[str, Any]) -> Dict[str, Any]:
+        client = cls._modern_client_payload(record)
+        inbound_ids = record.get("inboundIds", [])
+        if not inbound_ids and isinstance(record.get("client"), dict):
+            inbound_ids = record["client"].get("inboundIds", [])
+        if not client.get("id") and client.get("uuid"):
+            client["id"] = client["uuid"]
+        return {"client": client, "inbound_ids": inbound_ids or []}
+
+    def list_modern_clients(self) -> Optional[List[Dict[str, Any]]]:
+        result = self._modern_request("GET", "clients/list")
+        if result is None:
+            return None
+        clients = result.get("obj")
+        if not isinstance(clients, list):
+            logger.error("Modern clients/list вернул некорректный obj на %s", self.config.name)
+            return None
+        return [self._modern_client_record(client) for client in clients if isinstance(client, dict)]
+
+    def get_modern_client(self, email: str) -> Optional[Dict[str, Any]]:
+        result = self._modern_request("GET", f"clients/get/{quote(email, safe='')}")
+        if result is None or result.get("obj") is None:
+            return None
+        record = result["obj"]
+        if not isinstance(record, dict):
+            logger.error("Modern clients/get вернул некорректный obj на %s", self.config.name)
+            return None
+        return self._modern_client_record(record)
+
+    def create_modern_client(self, client_data: Dict[str, Any], inbound_ids: List[int]) -> bool:
+        if not inbound_ids:
+            logger.error("Нельзя создать клиента без inbound на панели %s", self.config.name)
+            return False
+        return self._modern_request(
+            "POST",
+            "clients/add",
+            json={"client": client_data, "inboundIds": inbound_ids},
+        ) is not None
+
+    def update_modern_client(self, email: str, client_data: Dict[str, Any]) -> bool:
+        existing = self.get_modern_client(email)
+        if existing is None:
+            return False
+
+        merged = dict(existing["client"])
+        merged.update(client_data)
+        merged["email"] = email
+        result = self._modern_request(
+            "POST",
+            f"clients/update/{quote(email, safe='')}",
+            json=merged,
+        )
+        return result is not None
+
+    def delete_modern_client(self, email: str) -> bool:
+        return self._modern_request(
+            "POST", f"clients/del/{quote(email, safe='')}"
+        ) is not None
+
+    def attach_modern_client(self, email: str, inbound_ids: List[int]) -> bool:
+        if not inbound_ids:
+            return True
+        return self._modern_request(
+            "POST",
+            f"clients/{quote(email, safe='')}/attach",
+            json={"inboundIds": inbound_ids},
+        ) is not None
+
+    def detach_modern_client(self, email: str, inbound_ids: List[int]) -> bool:
+        if not inbound_ids:
+            return True
+        return self._modern_request(
+            "POST",
+            f"clients/{quote(email, safe='')}/detach",
+            json={"inboundIds": inbound_ids},
+        ) is not None
     
     def get_inbounds(self) -> List[Dict[str, Any]]:
         """
@@ -205,6 +359,13 @@ class XUIPanel:
         Получить статистику трафика клиента по email.
         GET {panel_path}/panel/api/inbounds/getClientTraffics/{email}
         """
+        if not self.config.legacy:
+            result = self._modern_request(
+                "GET", f"clients/traffic/{quote(email, safe='')}"
+            )
+            traffic = result.get("obj") if result else None
+            return traffic if isinstance(traffic, dict) else {}
+
         try:
             url = f"{self.config.host}{self.config.panel_path}/panel/api/inbounds/getClientTraffics/{email}"
             
@@ -229,6 +390,22 @@ class XUIPanel:
         total_down = 0
         
         try:
+            if not self.config.legacy:
+                clients = self.list_modern_clients()
+                if clients is None:
+                    return {'upload': 0, 'download': 0}
+                for record in clients:
+                    client = record['client']
+                    if client.get('id') == uuid or (
+                        password and client.get('password') == password
+                    ):
+                        traffic = self.get_client_traffic(client.get('email', ''))
+                        return {
+                            'upload': traffic.get('up', 0),
+                            'download': traffic.get('down', 0),
+                        }
+                return {'upload': 0, 'download': 0}
+
             inbounds = self.get_inbounds()
             
             for inbound in inbounds:

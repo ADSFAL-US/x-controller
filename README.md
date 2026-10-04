@@ -65,6 +65,17 @@ sudo bash install.sh
 # 3. Open http://localhost:8080
 ```
 
+## Panel API Modes
+
+Each panel can select its 3x-ui API mode in `config/panels.yaml`:
+
+- `legacy: true` uses the existing username/password login and inbound client endpoints for 3x-ui 2.9.x. If `legacy` is omitted, it defaults to `true`.
+- `legacy: false` uses the separate clients API available from 3x-ui 3.1.0. Configure `api_token` with a token created in **Settings > Security > API Tokens**. Authentication is sent as `Authorization: Bearer <token>`; username/password are not used and may be omitted.
+
+Modern panels keep one client entity per subscription and attach it to the panel's inbounds. The adapter generates a panel email for a new client and preserves it on subsequent syncs. Keep API tokens out of source control and restrict access to the panel configuration file.
+
+`panel_path`, `sub_host`, and `sub_path` continue to control panel and subscription URLs in both modes. See `config/panels.yaml` for examples.
+
 ## Sync Behavior
 
 1. User creates/updates/deletes subscription via UI/API

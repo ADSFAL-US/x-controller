@@ -205,6 +205,138 @@ class SyncService:
         elapsed = time.time() - start_time
         logger.info(f"_execute_pending_syncs completed in {elapsed:.2f}s")
     
+    @staticmethod
+    def _modern_record_matches(record: dict, subscription: Subscription) -> bool:
+        client = record.get('client', {})
+        return bool(
+            (subscription.uuid and client.get('id') == subscription.uuid)
+            or (subscription.ss_password and client.get('password') == subscription.ss_password)
+        )
+
+    @staticmethod
+    def _modern_inbound_settings(inbound: dict, key: str) -> dict:
+        value = inbound.get(key, {})
+        if isinstance(value, str):
+            return json.loads(value or '{}')
+        return value or {}
+
+    def _build_modern_client_data(self, subscription: Subscription, inbounds: list) -> tuple[dict | None, str | None]:
+        client_data = {}
+        required_flows = set()
+
+        try:
+            for inbound in inbounds:
+                protocol = inbound.get('protocol', 'vless').lower()
+                client_data.update(subscription.to_xui_client(protocol=protocol))
+
+                if protocol != 'vless':
+                    continue
+
+                stream_settings = self._modern_inbound_settings(inbound, 'streamSettings')
+                if not stream_settings.get('realitySettings'):
+                    continue
+
+                network = stream_settings.get('network', 'tcp')
+                if network in ('xhttp', 'splithttp', 'httpupgrade'):
+                    required_flows.add('xtls-rprx-vision-udp443')
+                elif network == 'tcp':
+                    required_flows.add('xtls-rprx-vision')
+
+            if len(required_flows) > 1:
+                return None, 'Modern inbounds require incompatible VLESS flow values'
+            if required_flows:
+                client_data['flow'] = required_flows.pop()
+            try:
+                client_data['tgId'] = int(subscription.tg_id or 0)
+            except (TypeError, ValueError):
+                return None, 'Subscription tg_id must be numeric for the modern clients API'
+            return client_data, None
+        except (json.JSONDecodeError, TypeError, AttributeError, KeyError) as e:
+            return None, f'Failed to build modern client data: {e}'
+
+    def _sync_modern_subscription(self, panel, subscription: Subscription, action: str,
+                                  inbounds: list) -> tuple[bool, str | None]:
+        records = panel.list_modern_clients()
+        if records is None:
+            return False, 'Failed to read clients from modern API'
+
+        matches = [record for record in records if self._modern_record_matches(record, subscription)]
+
+        if action == 'delete':
+            for record in matches:
+                email = record['client'].get('email')
+                if not email or not panel.delete_modern_client(email):
+                    return False, f'Failed to delete modern client {email or "without email"}'
+
+            remaining = panel.list_modern_clients()
+            if remaining is None:
+                return False, 'Failed to verify modern client deletion'
+            if any(self._modern_record_matches(record, subscription) for record in remaining):
+                return False, 'Modern client still exists after deletion'
+            return True, None
+
+        inbound_ids = [inbound.get('id') for inbound in inbounds if inbound.get('id')]
+        if not inbound_ids:
+            return False, 'No inbounds available for modern client sync'
+        if len(matches) > 1:
+            return False, 'Multiple modern client records match this subscription identity'
+
+        client_data, error = self._build_modern_client_data(subscription, inbounds)
+        if error:
+            return False, error
+
+        if matches:
+            email = matches[0]['client'].get('email')
+            if not email:
+                return False, 'Existing modern client has no email'
+            client_data['email'] = email
+            current_client = matches[0]['client']
+            if any(current_client.get(key) != value for key, value in client_data.items()):
+                if not panel.update_modern_client(email, client_data):
+                    return False, f'Failed to update modern client {email}'
+        else:
+            known_emails = {record['client'].get('email') for record in records}
+            email = _generate_random_email()
+            while email in known_emails:
+                email = _generate_random_email()
+            client_data['email'] = email
+            if not panel.create_modern_client(client_data, inbound_ids):
+                return False, f'Failed to create modern client {email}'
+
+        current_ids = set(matches[0].get('inbound_ids', [])) if matches else set()
+        desired_ids = set(inbound_ids)
+        bind_errors = []
+        missing_ids = sorted(desired_ids - current_ids)
+        extra_ids = sorted(current_ids - desired_ids)
+        if matches and missing_ids and not panel.attach_modern_client(email, missing_ids):
+            bind_errors.append(f'Failed to attach inbound IDs {missing_ids}')
+        if matches and extra_ids and not panel.detach_modern_client(email, extra_ids):
+            bind_errors.append(f'Failed to detach inbound IDs {extra_ids}')
+
+        verified = panel.list_modern_clients()
+        if verified is None:
+            return False, 'Failed to verify modern client and inbound bindings'
+        verified_matches = [
+            record for record in verified
+            if record['client'].get('email') == email
+        ]
+        if len(verified_matches) != 1:
+            return False, f'Modern client {email} missing or duplicated after sync'
+
+        verified_record = verified_matches[0]
+        verified_client = verified_record['client']
+        if any(verified_client.get(key) != value for key, value in client_data.items()):
+            bind_errors.append('Modern client fields differ after sync')
+        verified_ids = set(verified_record.get('inbound_ids', []))
+        if verified_ids != desired_ids:
+            bind_errors.append(
+                f'Modern inbound bindings differ: actual={sorted(verified_ids)}, '
+                f'expected={sorted(desired_ids)}'
+            )
+        if bind_errors:
+            return False, '; '.join(bind_errors)
+        return True, None
+
     def sync_subscription(self, subscription: Subscription, action: str = 'create') -> dict:
         """
         Sync a single subscription to all panels.
@@ -243,11 +375,25 @@ class SyncService:
             
             # Get inbounds
             inbounds = panel.get_inbounds()
-            if not inbounds:
+            is_legacy = getattr(panel.config, 'legacy', True)
+            if not inbounds and (is_legacy or action != 'delete'):
                 logger.warning(f"No inbounds on panel {panel.config.name}")
                 self._log_sync(subscription, panel.config.name, action, False, "No inbounds")
                 results[panel.config.name] = {'success': False, 'error': 'No inbounds'}
                 all_success = False
+                continue
+
+            if not is_legacy:
+                panel_success, error_msg = self._sync_modern_subscription(
+                    panel, subscription, action, inbounds or []
+                )
+                self._log_sync(subscription, panel.config.name, action, panel_success, error_msg)
+                results[panel.config.name] = {
+                    'success': panel_success,
+                    'error': error_msg,
+                }
+                if not panel_success:
+                    all_success = False
                 continue
             
             # CLEANUP DUPLICATES for this subscription's subId across all inbounds
@@ -531,6 +677,32 @@ class SyncService:
             if not panel.login():
                 logger.error(f"Cannot check panel {panel.config.name}")
                 continue
+
+            if not getattr(panel.config, 'legacy', True):
+                sync_plan = self._calculate_panel_diff(
+                    panel, db_subs_by_uuid, db_subs_by_password
+                )
+                if sync_plan.get('error'):
+                    logger.error(
+                        "Cannot check modern panel %s: %s",
+                        panel.config.name,
+                        sync_plan['error'],
+                    )
+                    continue
+
+                inbounds = panel.get_inbounds()
+                for item in sync_plan['delete']:
+                    email = item.get('email')
+                    if email and not panel.delete_modern_client(email):
+                        logger.error("Failed to remove modern orphan %s from %s", email, panel.config.name)
+                for item in sync_plan['create'] + sync_plan['update']:
+                    success, error = self._sync_modern_subscription(
+                        panel, item['subscription'], 'update', inbounds
+                    )
+                    self._log_sync(
+                        item['subscription'], panel.config.name, 'update', success, error
+                    )
+                continue
             
             inbounds = panel.get_inbounds()
             for inbound in inbounds:
@@ -598,6 +770,14 @@ class SyncService:
                     continue
                 
                 sync_plan = self._calculate_panel_diff(panel, db_subs_by_uuid, db_subs_by_password)
+
+                if sync_plan.get('error'):
+                    logger.error(
+                        "Cannot calculate sync plan for panel %s: %s",
+                        panel.config.name,
+                        sync_plan['error'],
+                    )
+                    continue
                 
                 if not any(sync_plan.values()):
                     logger.info(f"Panel {panel.config.name} is in sync with DB")
@@ -623,7 +803,10 @@ class SyncService:
                 # Execute deletes directly (orphan cleanup, no conflict with queue)
                 for item in sync_plan['delete']:
                     try:
-                        success = panel.delete_client(item['inbound_id'], item['client_id'])
+                        if getattr(panel.config, 'legacy', True):
+                            success = panel.delete_client(item['inbound_id'], item['client_id'])
+                        else:
+                            success = panel.delete_modern_client(item['email'])
                         status = "✓" if success else "✗"
                         client_email = item.get('panel_client', {}).get('email', 'unknown')
                         logger.info(f"  {status} DELETE {client_email}: {item['reason']}")
@@ -642,6 +825,11 @@ class SyncService:
         Returns plan: {'create': [...], 'delete': [...], 'update': [...]}
         Supports both UUID-based (VLESS/VMess/Trojan) and password-based (Shadowsocks) clients.
         """
+        if not getattr(panel.config, 'legacy', True):
+            return self._calculate_modern_panel_diff(
+                panel, db_subs_by_uuid, db_subs_by_password
+            )
+
         plan = {'create': [], 'delete': [], 'update': []}
         
         # Get current panel state
@@ -777,6 +965,88 @@ class SyncService:
                         'reason': 'Shadowsocks orphan (not in DB)'
                     })
         
+        return plan
+
+    def _calculate_modern_panel_diff(self, panel, db_subs_by_uuid: dict[str, Subscription],
+                                     db_subs_by_password: dict[str, Subscription]) -> dict:
+        plan = {'create': [], 'delete': [], 'update': []}
+        inbounds = panel.get_inbounds()
+        if not inbounds:
+            plan['error'] = 'No inbounds on panel'
+            return plan
+
+        records = panel.list_modern_clients()
+        if records is None:
+            plan['error'] = 'Failed to read clients from modern API'
+            return plan
+
+        subscriptions = {
+            sub.id: sub
+            for sub in list(db_subs_by_uuid.values()) + list(db_subs_by_password.values())
+        }
+        matched_emails = set()
+        desired_inbound_ids = {inbound.get('id') for inbound in inbounds if inbound.get('id')}
+
+        for subscription in subscriptions.values():
+            matches = [
+                record for record in records
+                if self._modern_record_matches(record, subscription)
+            ]
+            if not matches:
+                if subscription.enabled:
+                    plan['create'].append({
+                        'subscription': subscription,
+                        'reason': 'Not found in modern clients API',
+                    })
+                continue
+
+            for record in matches:
+                if record['client'].get('email'):
+                    matched_emails.add(record['client']['email'])
+
+            if not subscription.enabled:
+                for record in matches:
+                    email = record['client'].get('email')
+                    if email:
+                        plan['delete'].append({
+                            'email': email,
+                            'panel_client': record['client'],
+                            'reason': 'Subscription disabled in DB',
+                        })
+                continue
+
+            client_data, error = self._build_modern_client_data(subscription, inbounds)
+            if error:
+                plan['error'] = error
+                return plan
+
+            panel_client = matches[0]['client']
+            client_data['email'] = panel_client.get('email')
+            differences = []
+            if any(panel_client.get(key) != value for key, value in client_data.items()):
+                differences.append('client fields differ')
+            if set(matches[0].get('inbound_ids', [])) != desired_inbound_ids:
+                differences.append('inbound bindings differ')
+            if len(matches) > 1:
+                differences.append('duplicate client identity')
+            if differences:
+                plan['update'].append({
+                    'subscription': subscription,
+                    'panel_client': panel_client,
+                    'differences': differences,
+                    'reason': f"Drift detected: {', '.join(differences)}",
+                })
+
+        for record in records:
+            client = record['client']
+            email = client.get('email')
+            if email and email not in matched_emails:
+                plan['delete'].append({
+                    'email': email,
+                    'panel_client': client,
+                    'reason': 'Orphan client (not in DB)',
+                })
+
         return plan
     
     def _execute_sync_plan(self, panel, plan: dict):

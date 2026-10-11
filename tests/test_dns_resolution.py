@@ -45,12 +45,17 @@ class DnsResolutionTests(unittest.TestCase):
             'inboundTag': ['dns-out'],
             'balancerTag': 'auto-select',
         })
-        self.assertEqual(profiles[0]['routing']['rules'][1]['network'], 'tcp,udp')
+        self.assertEqual(profiles[0]['routing']['rules'][1], {
+            'network': 'tcp,udp',
+            'port': '53',
+            'balancerTag': 'auto-select',
+        })
+        self.assertEqual(profiles[0]['routing']['rules'][2]['network'], 'tcp,udp')
         self.assertEqual(profiles[1]['dns'], {'servers': ['9.9.9.9'], 'tag': 'dns-out'})
-        self.assertEqual(profiles[1]['routing']['rules'], [{
-            'inboundTag': ['dns-out'],
-            'outboundTag': 'proxy',
-        }])
+        self.assertEqual(profiles[1]['routing']['rules'], [
+            {'inboundTag': ['dns-out'], 'outboundTag': 'proxy'},
+            {'network': 'tcp,udp', 'port': '53', 'outboundTag': 'proxy'},
+        ])
         self.assertNotIn('dns', profiles[2])
         self.assertNotIn('routing', profiles[2])
 
@@ -77,10 +82,10 @@ class DnsResolutionTests(unittest.TestCase):
 
         apply_dns_rules_to_profiles(profiles, [], route_dns_through_tunnel=True)
 
-        self.assertEqual(profiles[0]['routing']['rules'], [{
-            'inboundTag': ['custom-dns'],
-            'outboundTag': 'proxy',
-        }])
+        self.assertEqual(profiles[0]['routing']['rules'], [
+            {'inboundTag': ['custom-dns'], 'outboundTag': 'proxy'},
+            {'network': 'tcp,udp', 'port': '53', 'outboundTag': 'proxy'},
+        ])
         self.assertNotIn('routing', profiles[1])
 
     def test_dns_routing_checkbox_off_leaves_profiles_unchanged(self):

@@ -187,6 +187,11 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
             "inboundTag": ["dns-out"],
             "balancerTag": "auto-select",
         })
+        self.assertEqual(profiles[0]["routing"]["rules"][1], {
+            "network": "tcp,udp",
+            "port": "53",
+            "balancerTag": "auto-select",
+        })
         self.assertEqual(profiles[1]["dns"], {
             "servers": ["9.9.9.9"],
             "tag": "dns-out",
@@ -223,10 +228,10 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         self.assertEqual(len(profiles), 2)
         self.assertEqual(profiles[0]["remarks"], "EU Premium")
         self.assertEqual(profiles[0]["dns"]["servers"], ["9.9.9.9"])
-        self.assertEqual(profiles[0]["routing"]["rules"], [{
-            "inboundTag": ["dns-out"],
-            "outboundTag": "proxy",
-        }])
+        self.assertEqual(profiles[0]["routing"]["rules"], [
+            {"inboundTag": ["dns-out"], "outboundTag": "proxy"},
+            {"network": "tcp,udp", "port": "53", "outboundTag": "proxy"},
+        ])
         self.assertNotIn("dns", profiles[1])
 
     def test_dns_rule_api_rejects_invalid_json_configuration(self):

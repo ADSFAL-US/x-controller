@@ -373,12 +373,18 @@ def apply_dns_rules_to_profiles(profiles, rules, route_dns_through_tunnel=False)
 
         routing = profile.setdefault('routing', {'rules': []})
         route_rules = routing.setdefault('rules', [])
-        dns_route = {'inboundTag': [dns_tag]}
         if any(balancer.get('tag') == 'auto-select' for balancer in routing.get('balancers', [])):
-            dns_route['balancerTag'] = 'auto-select'
+            tunnel_route = {'balancerTag': 'auto-select'}
         else:
             if not any(outbound.get('tag') == 'proxy' for outbound in profile.get('outbounds', [])):
                 continue
-            dns_route['outboundTag'] = 'proxy'
-        route_rules.insert(0, dns_route)
+            tunnel_route = {'outboundTag': 'proxy'}
+
+        # DNS packets from the client's TUN are ordinary UDP/TCP traffic, not
+        # Xray DNS-module requests, so they do not carry dns.tag as inboundTag.
+        # Match port 53 as well as the tag used by Xray's DNS module.
+        route_rules[0:0] = [
+            {'inboundTag': [dns_tag], **tunnel_route},
+            {'network': 'tcp,udp', 'port': '53', **tunnel_route},
+        ]
     return profiles

@@ -18,6 +18,7 @@ import json
 import urllib.parse
 
 AUTO_SELECT_TAG_PREFIX = 'as-'
+DNS_ROUTE_TAG = 'dns-out'
 DEFAULT_PROBE_URL = 'https://connectivitycheck.gstatic.com/generate_204'
 
 
@@ -347,11 +348,33 @@ def build_auto_select_config(all_uris, rules, gsettings):
     return profiles, len(outbounds)
 
 
-def apply_dns_rules_to_profiles(profiles, rules):
-    """Apply the highest-priority matching DNS rule to each JSON profile."""
+def apply_dns_rules_to_profiles(profiles, rules, route_dns_through_tunnel=False):
+    """Apply the highest-priority DNS rule and optionally route DNS upstreams."""
     for profile in profiles:
         profile_name = profile.get('remarks', '')
         rule = next((candidate for candidate in rules if candidate.matches_config(profile_name)), None)
         if rule:
             profile['dns'] = rule.get_dns_config()
+        if not route_dns_through_tunnel:
+            continue
+
+        dns_config = profile.get('dns')
+        if not isinstance(dns_config, dict):
+            continue
+
+        dns_tag = dns_config.get('tag')
+        if not isinstance(dns_tag, str) or not dns_tag.strip():
+            dns_tag = DNS_ROUTE_TAG
+            dns_config['tag'] = dns_tag
+
+        routing = profile.setdefault('routing', {'rules': []})
+        route_rules = routing.setdefault('rules', [])
+        dns_route = {'inboundTag': [dns_tag]}
+        if any(balancer.get('tag') == 'auto-select' for balancer in routing.get('balancers', [])):
+            dns_route['balancerTag'] = 'auto-select'
+        else:
+            if not any(outbound.get('tag') == 'proxy' for outbound in profile.get('outbounds', [])):
+                continue
+            dns_route['outboundTag'] = 'proxy'
+        route_rules.insert(0, dns_route)
     return profiles

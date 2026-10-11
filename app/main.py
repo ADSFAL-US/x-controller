@@ -77,6 +77,7 @@ with app.app_context():
                 ('expired_sub_enabled', 'BOOLEAN DEFAULT 0'),
                 ('expired_preset_id', 'INTEGER'),
                 ('auto_select_enabled', 'BOOLEAN DEFAULT 0'),
+                ('dns_route_through_tunnel_enabled', 'BOOLEAN DEFAULT 0'),
                 ('auto_select_tag_name', 'VARCHAR(100)'),
                 ('auto_select_ping_timeout_ms', 'INTEGER DEFAULT 2000'),
                 ('auto_select_ping_interval_sec', 'INTEGER DEFAULT 60'),
@@ -1555,8 +1556,11 @@ def subscription_link(token):
             DnsRule.priority.desc(),
             DnsRule.created_at.desc()
         ).all()
-        if dns_rules:
-            apply_dns_rules_to_profiles(auto_select_json, dns_rules)
+        apply_dns_rules_to_profiles(
+            auto_select_json,
+            dns_rules,
+            route_dns_through_tunnel=gsettings.dns_route_through_tunnel_enabled,
+        )
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     else:
@@ -3025,6 +3029,7 @@ def auto_select_settings():
         """
 
     enabled_checked = 'checked' if settings.auto_select_enabled else ''
+    dns_route_checked = 'checked' if settings.dns_route_through_tunnel_enabled else ''
     tag_name = settings.auto_select_tag_name or '⚡ AUTO SELECT'
     ping_timeout = settings.auto_select_ping_timeout_ms or 2000
     ping_interval = settings.auto_select_ping_interval_sec or 60
@@ -3080,6 +3085,13 @@ def auto_select_settings():
                         <input type="checkbox" name="auto_select_enabled" {enabled_checked} style="width:auto;">
                         Enable Auto Select (добавлять конфиг автовыбора с id 0 в подписки)
                     </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="dns_route_through_tunnel_enabled" {dns_route_checked} style="width:auto;">
+                        Маршрутизировать DNS-запросы через туннель
+                    </label>
+                    <div class="help">Для профилей с DNS-блоком: DNS-запросы пойдут через выбранную Auto Select ноду или proxy-outbound профиля. Профили без DNS-блока не меняются.</div>
                 </div>
                 <div class="form-group">
                     <label>Config Name (tag):</label>
@@ -3139,6 +3151,7 @@ def auto_select_settings_save():
     """Сохранение общих настроек автовыбора."""
     settings = GlobalSettings.get()
     settings.auto_select_enabled = request.form.get('auto_select_enabled') == 'on'
+    settings.dns_route_through_tunnel_enabled = request.form.get('dns_route_through_tunnel_enabled') == 'on'
     settings.auto_select_tag_name = request.form.get('auto_select_tag_name', '').strip()
     settings.auto_select_ping_timeout_ms = int(request.form.get('auto_select_ping_timeout_ms', 2000) or 2000)
     settings.auto_select_ping_interval_sec = int(request.form.get('auto_select_ping_interval_sec', 60) or 60)
@@ -3562,6 +3575,8 @@ def api_settings():
             settings.happ_routing_config = data['happ_routing_config']
         if 'happ_dns_from_json_enabled' in data:
             settings.happ_dns_from_json_enabled = bool(data['happ_dns_from_json_enabled'])
+        if 'dns_route_through_tunnel_enabled' in data:
+            settings.dns_route_through_tunnel_enabled = bool(data['dns_route_through_tunnel_enabled'])
         
         # Expired subscription placeholders
         if 'expired_sub_enabled' in data:
@@ -3981,7 +3996,7 @@ def list_dns_rules():
     </head>
     <body>
         <h1>DNS Resolution</h1>
-        <p>Правила применяются к JSON-профилям по тегу remarks. У Auto Select DNS-запросы идут через балансировщик; base64-подписки остаются без изменений.</p>
+        <p>Правила применяются к JSON-профилям по тегу remarks. Чтобы направлять DNS-запросы профиля через его туннель, включите настройку на странице Auto Select; base64-подписки остаются без изменений.</p>
         <div class="nav">
             <a href="/">Dashboard</a>
             <a href="/subscriptions">Subscriptions</a>
@@ -4058,7 +4073,7 @@ DNS_RULE_FORM = """
         <div class="form-group">
             <label>DNS block (JSON object) *</label>
             <textarea class="dns-json" name="dns_config_json" required>{{ dns_config_json }}</textarea>
-            <div class="help">Вставьте содержимое Xray-блока dns, например {"servers":["1.1.1.1"]}. DNS-серверы без +local следуют маршрутизации профиля; в Auto Select запросы проходят через выбранную ноду.</div>
+            <div class="help">Вставьте содержимое Xray-блока dns, например {"servers":["1.1.1.1"]}. Чтобы DNS-запросы гарантированно маршрутизировались через туннель, включите соответствующую настройку на странице Auto Select.</div>
         </div>
         <div class="form-group">
             <label>Priority</label>

@@ -144,6 +144,7 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
             db.session.add(GlobalSettings(
                 auto_select_enabled=True,
                 happ_dns_from_json_enabled=True,
+                dns_route_through_tunnel_enabled=True,
                 auto_select_tag_name="AUTO SELECT",
             ))
             db.session.add_all([
@@ -178,9 +179,18 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         self.assertEqual(response.headers["dns-from-json-enable"], "true")
         self.assertEqual(response.mimetype, "application/json")
         profiles = response.get_json()
-        self.assertEqual(profiles[0]["dns"], {"servers": ["8.8.8.8"]})
-        self.assertEqual(profiles[0]["routing"]["rules"][0]["balancerTag"], "auto-select")
-        self.assertEqual(profiles[1]["dns"], {"servers": ["9.9.9.9"]})
+        self.assertEqual(profiles[0]["dns"], {
+            "servers": ["8.8.8.8"],
+            "tag": "dns-out",
+        })
+        self.assertEqual(profiles[0]["routing"]["rules"][0], {
+            "inboundTag": ["dns-out"],
+            "balancerTag": "auto-select",
+        })
+        self.assertEqual(profiles[1]["dns"], {
+            "servers": ["9.9.9.9"],
+            "tag": "dns-out",
+        })
         self.assertNotIn("dns", profiles[2])
 
     def test_dns_rule_api_rejects_invalid_json_configuration(self):
@@ -218,6 +228,24 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
             json.loads(response.json["rule"]["dns_config_json"]),
             {"servers": ["1.1.1.1"]},
         )
+
+    def test_auto_select_dns_routing_setting_is_saved_and_exposed_by_api(self):
+        with self.app.test_client() as client:
+            client.post("/login", data={"username": "admin", "password": "admin"})
+            response = client.post(
+                "/auto-select/settings",
+                data={
+                    "dns_route_through_tunnel_enabled": "on",
+                    "auto_select_enabled": "on",
+                },
+            )
+            settings_response = client.get(
+                "/api/settings",
+                headers={"Authorization": "Basic YWRtaW46YWRtaW4="},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(settings_response.json["settings"]["dns_route_through_tunnel_enabled"])
 
     def test_legacy_base64_subscription_format_is_preserved(self):
         with self.app.app_context():

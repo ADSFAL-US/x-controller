@@ -45,6 +45,8 @@ User -> Web UI / REST API -> SQLite (source of truth)
 | PUT | `/api/subscriptions/<id>` | Update |
 | DELETE | `/api/subscriptions/<id>` | Delete |
 | GET | `/api/panels` | List panels |
+| GET/POST | `/api/dns-rules` | List or create DNS blocks |
+| GET/PUT/DELETE | `/api/dns-rules/<id>` | Read, update, or delete a DNS block |
 
 ## Web UI
 
@@ -52,6 +54,13 @@ User -> Web UI / REST API -> SQLite (source of truth)
 - `/subscriptions` - List subscriptions
 - `/subscriptions/new` - Create form
 - `/subscriptions/<id>/edit` - Edit form
+- `/dns-rules` - Manage DNS blocks for matching JSON profile tags
+
+## DNS Resolution
+
+DNS blocks are JSON objects stored as Xray `dns` settings and selected by case-insensitive tag substrings. Include tags select matching profile `remarks`; exclude tags take precedence. If multiple active blocks match a profile, the highest-priority block is used. For an Auto Select profile, create a selector matching its configured profile name (the `remarks` value); that profile's existing TCP/UDP routing sends non-local DNS upstream requests through the Auto Select balancer, so they use the node chosen by the observatory. Avoid `+local` DNS server addresses when DNS must follow that routing.
+
+The `dns-from-json-enable` Happ header is controlled by the checkbox in global settings. Legacy base64 and Clash/YAML responses are retained; DNS blocks are injected into JSON-array profiles and do not change the legacy response format.
 
 ## Quick Start
 

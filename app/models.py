@@ -309,6 +309,7 @@ class GlobalSettings(db.Model):
     # Happ custom routing (JSON for custom-tunnel-config)
     happ_routing_enabled = db.Column(db.Boolean, default=False)
     happ_routing_config = db.Column(db.Text, nullable=True)
+    happ_dns_from_json_enabled = db.Column(db.Boolean, default=False)
     
     # Expired subscription placeholders
     expired_sub_enabled = db.Column(db.Boolean, default=False)
@@ -357,6 +358,7 @@ class GlobalSettings(db.Model):
             'support_url': self.support_url,
             'happ_routing_enabled': self.happ_routing_enabled,
             'happ_routing_config': self.happ_routing_config,
+            'happ_dns_from_json_enabled': self.happ_dns_from_json_enabled,
             'expired_sub_enabled': self.expired_sub_enabled,
             'expired_preset_id': self.expired_preset_id,
             'auto_select_enabled': self.auto_select_enabled,
@@ -415,6 +417,55 @@ class AutoSelectRule(db.Model):
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class DnsRule(db.Model):
+    """DNS configuration applied to matching JSON subscription profiles."""
+
+    __tablename__ = 'dns_rules'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    include_tags = db.Column(db.Text, nullable=True)
+    exclude_tags = db.Column(db.Text, nullable=True)
+    dns_config_json = db.Column(db.Text, nullable=False)
+    priority = db.Column(db.Integer, default=100)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc))
+    updated_at = db.Column(db.DateTime, default=datetime.now(tz=timezone.utc), onupdate=datetime.now(tz=timezone.utc))
+
+    def get_include_tags(self):
+        return [tag.strip() for tag in (self.include_tags or '').split(',') if tag.strip()]
+
+    def get_exclude_tags(self):
+        return [tag.strip() for tag in (self.exclude_tags or '').split(',') if tag.strip()]
+
+    def matches_config(self, config_name):
+        name_lower = (config_name or '').lower()
+        include = [tag.lower() for tag in self.get_include_tags()]
+        exclude = [tag.lower() for tag in self.get_exclude_tags()]
+        if exclude and any(tag in name_lower for tag in exclude):
+            return False
+        return not (include and not any(tag in name_lower for tag in include))
+
+    def get_dns_config(self):
+        import json
+        return json.loads(self.dns_config_json)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'include_tags': self.include_tags,
+            'exclude_tags': self.exclude_tags,
+            'dns_config_json': self.dns_config_json,
+            'priority': self.priority,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 

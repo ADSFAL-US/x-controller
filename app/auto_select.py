@@ -313,6 +313,8 @@ def build_auto_select_config(all_uris, rules, gsettings):
                 'httpMethod': 'HEAD',
             },
         },
+        # Non-local DNS upstream requests follow routing and therefore use the
+        # same observed outbound as the profile's proxied TCP/UDP traffic.
         'routing': {
             'rules': [
                 {'network': 'tcp,udp', 'balancerTag': 'auto-select'},
@@ -343,3 +345,13 @@ def build_auto_select_config(all_uris, rules, gsettings):
             profiles.append(profile)
 
     return profiles, len(outbounds)
+
+
+def apply_dns_rules_to_profiles(profiles, rules):
+    """Apply the highest-priority matching DNS rule to each JSON profile."""
+    for profile in profiles:
+        profile_name = profile.get('remarks', '')
+        rule = next((candidate for candidate in rules if candidate.matches_config(profile_name)), None)
+        if rule:
+            profile['dns'] = rule.get_dns_config()
+    return profiles

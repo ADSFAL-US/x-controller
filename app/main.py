@@ -13,9 +13,9 @@ from typing import List
 from flask import Flask, jsonify, request, render_template_string, redirect, url_for, session
 
 from app.xui_client import XUIClient
-from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, AutoSelectRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
+from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, AutoSelectRule, DnsRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
-from app.auto_select import build_auto_select_config
+from app.auto_select import build_auto_select_config, apply_dns_rules_to_profiles
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Настройка логирования
@@ -73,6 +73,7 @@ with app.app_context():
                 ('support_url', 'VARCHAR(255)'),
                 ('happ_routing_enabled', 'BOOLEAN DEFAULT 0'),
                 ('happ_routing_config', 'TEXT'),
+                ('happ_dns_from_json_enabled', 'BOOLEAN DEFAULT 0'),
                 ('expired_sub_enabled', 'BOOLEAN DEFAULT 0'),
                 ('expired_preset_id', 'INTEGER'),
                 ('auto_select_enabled', 'BOOLEAN DEFAULT 0'),
@@ -171,6 +172,28 @@ with app.app_context():
                     logger.info("Migration: created auto_select_rules table")
                 except OperationalError as e:
                     logger.warning(f"Migration: auto_select_rules table may already exist: {e}")
+                    db.session.rollback()
+
+            if 'dns_rules' not in existing_tables:
+                try:
+                    db.session.execute(text("""
+                        CREATE TABLE IF NOT EXISTS dns_rules (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name VARCHAR(100) NOT NULL,
+                            description TEXT,
+                            include_tags TEXT,
+                            exclude_tags TEXT,
+                            dns_config_json TEXT NOT NULL,
+                            priority INTEGER DEFAULT 100,
+                            is_active BOOLEAN DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    db.session.commit()
+                    logger.info("Migration: created dns_rules table")
+                except OperationalError as e:
+                    logger.warning(f"Migration: dns_rules table may already exist: {e}")
                     db.session.rollback()
     except Exception:
         # Race condition: другой worker уже создал таблицы
@@ -330,6 +353,7 @@ def index():
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
             <a href="/auto-select">Auto Select</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/settings">Settings</a>
             <a href="/api/health">API Health</a>
             <a href="/logout" style="float:right;">Logout</a>
@@ -448,6 +472,7 @@ def list_subscriptions():
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
             <a href="/auto-select">Auto Select</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/subscriptions/new" class="btn">Create New</a>
             <button onclick="syncAll()" class="btn btn-orange" style="padding: 10px 20px; border: none; cursor: pointer; border-radius: 4px;">Sync All</button>
             <a href="/logout" style="float:right;">Logout</a>
@@ -1225,6 +1250,8 @@ def subscription_link(token):
         }
         if gsettings.sub_expire_button_link:
             headers['sub-expire-button-link'] = gsettings.sub_expire_button_link
+        if gsettings.happ_dns_from_json_enabled:
+            headers['dns-from-json-enable'] = 'true'
         
         # All standard Happ headers
         if gsettings.sub_description:
@@ -1443,6 +1470,8 @@ def subscription_link(token):
         'subscription-userinfo': sub_info,
         'profile-update-interval': '1',
     }
+    if gsettings.happ_dns_from_json_enabled:
+        headers['dns-from-json-enable'] = 'true'
     if gsettings.sub_description:
         # Happ uses sub-info-text for subscription description block
         headers['sub-info-text'] = _utf8_header(gsettings.sub_description[:200])
@@ -1522,6 +1551,12 @@ def subscription_link(token):
     elif auto_select_json and not is_clash:
         # JSON-array subscription (Happ "JSON Arrays" format):
         # [0] auto-select profile (balancer + observatory), [1..n] each config separately
+        dns_rules = DnsRule.query.filter_by(is_active=True).order_by(
+            DnsRule.priority.desc(),
+            DnsRule.created_at.desc()
+        ).all()
+        if dns_rules:
+            apply_dns_rules_to_profiles(auto_select_json, dns_rules)
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     else:
@@ -3031,6 +3066,7 @@ def auto_select_settings():
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/settings">Settings</a>
             <a href="/auto-select/new" class="btn">Create New Rule</a>
             <a href="/logout" style="float:right;">Logout</a>
@@ -3271,6 +3307,7 @@ def global_settings():
         # Happ routing
         settings.happ_routing_enabled = request.form.get('happ_routing_enabled') == 'on'
         settings.happ_routing_config = request.form.get('happ_routing_config', '')
+        settings.happ_dns_from_json_enabled = request.form.get('happ_dns_from_json_enabled') == 'on'
         
         # Expired subscription placeholders
         settings.expired_sub_enabled = request.form.get('expired_sub_enabled') == 'on'
@@ -3320,6 +3357,7 @@ def global_settings():
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
             <a href="/auto-select">Auto Select</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>
         
@@ -3376,6 +3414,14 @@ def global_settings():
             
             <hr style="margin: 30px 0;">
             <h3>Happ Subscription Metadata</h3>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="happ_dns_from_json_enabled" {% if settings.happ_dns_from_json_enabled %}checked{% endif %}>
+                    Передавать флаг «Использовать DNS из JSON»
+                </label>
+                <div class="help">Отправляет заголовок dns-from-json-enable: true. Флаг влияет на Happ только при JSON-конфигурации и выключенном routing-профиле.</div>
+            </div>
             
             <div class="form-group">
                 <label>
@@ -3514,6 +3560,8 @@ def api_settings():
             settings.happ_routing_enabled = bool(data['happ_routing_enabled'])
         if 'happ_routing_config' in data:
             settings.happ_routing_config = data['happ_routing_config']
+        if 'happ_dns_from_json_enabled' in data:
+            settings.happ_dns_from_json_enabled = bool(data['happ_dns_from_json_enabled'])
         
         # Expired subscription placeholders
         if 'expired_sub_enabled' in data:
@@ -3587,6 +3635,7 @@ def presets_ui():
             <a href="/presets">Presets</a>
             <a href="/config-transforms">Config Transforms</a>
             <a href="/auto-select">Auto Select</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/settings">Settings</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>
@@ -3877,6 +3926,267 @@ def delete_preset(preset_id):
 
 # ==================== Config Transform Rules (Web UI) ====================
 
+# ==================== DNS Resolution Rules ====================
+
+def _normalize_dns_config(value):
+    if isinstance(value, str):
+        try:
+            config = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"DNS configuration must be valid JSON: {exc.msg}") from exc
+    else:
+        config = value
+    if not isinstance(config, dict):
+        raise ValueError("DNS configuration must be a JSON object")
+    return json.dumps(config, ensure_ascii=False)
+
+
+def _dns_rule_form_values(form):
+    name = form.get('name', '').strip()
+    if not name:
+        raise ValueError("Name is required")
+    return {
+        'name': name,
+        'description': form.get('description', '').strip() or None,
+        'include_tags': form.get('include_tags', '').strip() or None,
+        'exclude_tags': form.get('exclude_tags', '').strip() or None,
+        'dns_config_json': _normalize_dns_config(form.get('dns_config_json', '')),
+        'priority': int(form.get('priority', 100) or 100),
+        'is_active': form.get('is_active') == 'on',
+    }
+
+
+@app.route('/dns-rules')
+@require_auth
+def list_dns_rules():
+    rules = DnsRule.query.order_by(
+        DnsRule.priority.desc(),
+        DnsRule.created_at.desc()
+    ).all()
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>DNS Resolution - 3x-controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .nav { margin: 20px 0; }
+        .nav a { margin-right: 20px; text-decoration: none; color: #007bff; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        .btn { padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; }
+        code, pre { background: #f0f0f0; padding: 4px; border-radius: 3px; }
+        pre { max-width: 420px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
+    </style>
+    </head>
+    <body>
+        <h1>DNS Resolution</h1>
+        <p>Правила применяются к JSON-профилям по тегу remarks. У Auto Select DNS-запросы идут через балансировщик; base64-подписки остаются без изменений.</p>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/subscriptions">Subscriptions</a>
+            <a href="/presets">Presets</a>
+            <a href="/config-transforms">Config Transforms</a>
+            <a href="/auto-select">Auto Select</a>
+            <a href="/settings">Settings</a>
+            <a href="/dns-rules/new" class="btn">Create DNS Block</a>
+        </div>
+        <table>
+            <tr><th>Name</th><th>Contains tags</th><th>Does not contain</th><th>DNS JSON</th><th>Priority</th><th>Status</th><th>Actions</th></tr>
+            {% for rule in rules %}
+            <tr>
+                <td>{{ rule.name }}</td>
+                <td><code>{{ rule.include_tags or '-' }}</code></td>
+                <td><code>{{ rule.exclude_tags or '-' }}</code></td>
+                <td><pre>{{ rule.dns_config_json }}</pre></td>
+                <td>{{ rule.priority }}</td>
+                <td>{{ 'Active' if rule.is_active else 'Inactive' }}</td>
+                <td>
+                    <a href="/dns-rules/{{ rule.id }}/edit">Edit</a>
+                    <form method="POST" action="/dns-rules/{{ rule.id }}/delete" style="display:inline;">
+                        <button type="submit" onclick="return confirm('Delete DNS block?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """, rules=rules)
+
+
+DNS_RULE_FORM = """
+<!DOCTYPE html>
+<html>
+<head><title>{{ title }} - 3x-controller</title>
+<style>
+    body { font-family: Arial, sans-serif; margin: 40px; max-width: 800px; }
+    .nav, .form-group { margin: 16px 0; }
+    .nav a { color: #007bff; }
+    label { display: block; font-weight: bold; margin-bottom: 5px; }
+    input[type="text"], input[type="number"], textarea {
+        width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;
+    }
+    textarea { min-height: 70px; font-family: monospace; }
+    .dns-json { min-height: 260px; }
+    .help { color: #666; font-size: 12px; margin-top: 4px; }
+    button { padding: 10px 20px; background: #007bff; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+</style>
+</head>
+<body>
+    <div class="nav"><a href="/dns-rules">&larr; Back to DNS blocks</a></div>
+    <h1>{{ title }}</h1>
+    <form method="POST">
+        <div class="form-group">
+            <label>Name *</label>
+            <input type="text" name="name" value="{{ rule.name if rule else '' }}" required>
+        </div>
+        <div class="form-group">
+            <label>Description</label>
+            <input type="text" name="description" value="{{ rule.description if rule and rule.description else '' }}">
+        </div>
+        <div class="form-group">
+            <label>Тег точно содержит (через запятую)</label>
+            <input type="text" name="include_tags" value="{{ rule.include_tags if rule and rule.include_tags else '' }}" placeholder="например: AUTO SELECT, premium">
+            <div class="help">Регистр не учитывается; пустое поле означает любой тег.</div>
+        </div>
+        <div class="form-group">
+            <label>Тег точно не содержит (через запятую)</label>
+            <input type="text" name="exclude_tags" value="{{ rule.exclude_tags if rule and rule.exclude_tags else '' }}" placeholder="например: expired, test">
+            <div class="help">Исключение имеет приоритет над включающим тегом.</div>
+        </div>
+        <div class="form-group">
+            <label>DNS block (JSON object) *</label>
+            <textarea class="dns-json" name="dns_config_json" required>{{ dns_config_json }}</textarea>
+            <div class="help">Вставьте содержимое Xray-блока dns, например {"servers":["1.1.1.1"]}. DNS-серверы без +local следуют маршрутизации профиля; в Auto Select запросы проходят через выбранную ноду.</div>
+        </div>
+        <div class="form-group">
+            <label>Priority</label>
+            <input type="number" name="priority" value="{{ rule.priority if rule else 100 }}">
+            <div class="help">Если подходят несколько блоков, применяется блок с наибольшим приоритетом.</div>
+        </div>
+        <div class="form-group">
+            <label><input type="checkbox" name="is_active" {% if not rule or rule.is_active %}checked{% endif %}> Active</label>
+        </div>
+        <button type="submit">Save DNS Block</button>
+    </form>
+</body>
+</html>
+"""
+
+
+def _render_dns_rule_form(rule=None):
+    default_dns = '{\n  "servers": ["1.1.1.1"]\n}'
+    return render_template_string(
+        DNS_RULE_FORM,
+        title='Edit DNS Block' if rule else 'Create DNS Block',
+        rule=rule,
+        dns_config_json=rule.dns_config_json if rule else default_dns,
+    )
+
+
+@app.route('/dns-rules/new', methods=['GET', 'POST'])
+@require_auth
+def create_dns_rule():
+    if request.method == 'POST':
+        try:
+            rule = DnsRule(**_dns_rule_form_values(request.form))
+        except (ValueError, TypeError) as exc:
+            return str(exc), 400
+        db.session.add(rule)
+        db.session.commit()
+        logger.info("Created DNS rule: %s", rule.name)
+        return redirect(url_for('list_dns_rules'))
+    return _render_dns_rule_form()
+
+
+@app.route('/dns-rules/<int:rule_id>/edit', methods=['GET', 'POST'])
+@require_auth
+def edit_dns_rule(rule_id):
+    rule = DnsRule.query.get_or_404(rule_id)
+    if request.method == 'POST':
+        try:
+            for key, value in _dns_rule_form_values(request.form).items():
+                setattr(rule, key, value)
+        except (ValueError, TypeError) as exc:
+            return str(exc), 400
+        db.session.commit()
+        logger.info("Updated DNS rule: %s", rule.name)
+        return redirect(url_for('list_dns_rules'))
+    return _render_dns_rule_form(rule)
+
+
+@app.route('/dns-rules/<int:rule_id>/delete', methods=['POST'])
+@require_auth
+def delete_dns_rule(rule_id):
+    rule = DnsRule.query.get_or_404(rule_id)
+    name = rule.name
+    db.session.delete(rule)
+    db.session.commit()
+    logger.info("Deleted DNS rule: %s", name)
+    return redirect(url_for('list_dns_rules'))
+
+
+def _dns_rule_api_values(data, partial=False):
+    values = {}
+    if not partial or 'name' in data:
+        name = (data.get('name') or '').strip()
+        if not name:
+            raise ValueError("name is required")
+        values['name'] = name
+    for key in ('description', 'include_tags', 'exclude_tags'):
+        if not partial or key in data:
+            values[key] = (data.get(key) or '').strip() or None
+    if not partial or 'dns_config_json' in data:
+        values['dns_config_json'] = _normalize_dns_config(data.get('dns_config_json'))
+    if not partial or 'priority' in data:
+        priority = data.get('priority', 100)
+        values['priority'] = int(100 if priority in (None, '') else priority)
+    if not partial or 'is_active' in data:
+        values['is_active'] = bool(data.get('is_active', True))
+    return values
+
+
+@app.route('/api/dns-rules', methods=['GET', 'POST'])
+@require_auth
+def dns_rules_api():
+    if request.method == 'GET':
+        rules = DnsRule.query.order_by(DnsRule.priority.desc(), DnsRule.created_at.desc()).all()
+        return jsonify({'success': True, 'count': len(rules), 'rules': [rule.to_dict() for rule in rules]})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON object is required'}), 400
+    try:
+        rule = DnsRule(**_dns_rule_api_values(data))
+    except (ValueError, TypeError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    db.session.add(rule)
+    db.session.commit()
+    return jsonify({'success': True, 'rule': rule.to_dict()}), 201
+
+
+@app.route('/api/dns-rules/<int:rule_id>', methods=['GET', 'PUT', 'DELETE'])
+@require_auth
+def dns_rule_api(rule_id):
+    rule = DnsRule.query.get_or_404(rule_id)
+    if request.method == 'GET':
+        return jsonify({'success': True, 'rule': rule.to_dict()})
+    if request.method == 'DELETE':
+        db.session.delete(rule)
+        db.session.commit()
+        return jsonify({'success': True})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON object is required'}), 400
+    try:
+        for key, value in _dns_rule_api_values(data, partial=True).items():
+            setattr(rule, key, value)
+    except (ValueError, TypeError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    db.session.commit()
+    return jsonify({'success': True, 'rule': rule.to_dict()})
+
+
 @app.route('/config-transforms')
 @require_auth
 def list_config_transforms():
@@ -3934,6 +4244,7 @@ def list_config_transforms():
             <a href="/subscriptions">Subscriptions</a>
             <a href="/presets">Presets</a>
             <a href="/settings">Settings</a>
+            <a href="/dns-rules">DNS Resolution</a>
             <a href="/config-transforms/new" class="btn">Create New Rule</a>
             <a href="/logout" style="float:right;">Logout</a>
         </div>

@@ -2,7 +2,11 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from app.auto_select import apply_dns_rules_to_profiles, build_auto_select_config
+from app.auto_select import (
+    apply_dns_rules_to_profiles,
+    build_auto_select_config,
+    build_single_config_profiles,
+)
 from app.models import DnsRule
 
 
@@ -55,9 +59,12 @@ class DnsResolutionTests(unittest.TestCase):
         self.assertEqual(profiles[1]['routing']['rules'], [
             {'inboundTag': ['dns-out'], 'outboundTag': 'proxy'},
             {'network': 'tcp,udp', 'port': '53', 'outboundTag': 'proxy'},
+            {'network': 'tcp,udp', 'outboundTag': 'proxy'},
         ])
         self.assertNotIn('dns', profiles[2])
-        self.assertNotIn('routing', profiles[2])
+        self.assertEqual(profiles[2]['routing']['rules'], [
+            {'network': 'tcp,udp', 'outboundTag': 'proxy'},
+        ])
 
     def test_first_matching_rule_wins_and_exclude_tag_takes_precedence(self):
         profiles = [{'remarks': 'EU premium'}]
@@ -69,6 +76,38 @@ class DnsResolutionTests(unittest.TestCase):
         apply_dns_rules_to_profiles(profiles, rules)
 
         self.assertEqual(profiles[0]['dns'], {'servers': ['9.9.9.9']})
+
+    def test_auto_select_inherits_dns_rule_matching_a_candidate(self):
+        profiles = [
+            {
+                'remarks': '⚡ АВТОВЫБОР',
+                'routing': {
+                    'rules': [{'network': 'tcp,udp', 'balancerTag': 'auto-select'}],
+                    'balancers': [{'tag': 'auto-select'}],
+                },
+            },
+            {'remarks': '🇫🇮 STABLE-node'},
+            {'remarks': '🇩🇪 FAST-node'},
+        ]
+        rules = [dns_rule('Stable DNS', {'servers': ['1.1.1.1']}, 'STABLE')]
+
+        apply_dns_rules_to_profiles(profiles, rules, route_dns_through_tunnel=True)
+
+        self.assertEqual(profiles[0]['dns'], {'servers': ['1.1.1.1'], 'tag': 'dns-out'})
+        self.assertEqual(profiles[0]['routing']['rules'][:2], [
+            {'inboundTag': ['dns-out'], 'balancerTag': 'auto-select'},
+            {'network': 'tcp,udp', 'port': '53', 'balancerTag': 'auto-select'},
+        ])
+        self.assertNotIn('dns', profiles[2])
+
+    def test_single_node_profiles_explicitly_route_all_transport_traffic_to_proxy(self):
+        profiles = build_single_config_profiles([
+            'vless://user@node.example:443?type=tcp&security=none#Node',
+        ])
+
+        self.assertEqual(profiles[0]['routing']['rules'], [
+            {'network': 'tcp,udp', 'outboundTag': 'proxy'},
+        ])
 
     def test_dns_routing_is_added_only_for_profiles_with_dns_when_enabled(self):
         profiles = [

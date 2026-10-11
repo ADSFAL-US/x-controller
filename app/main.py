@@ -1565,6 +1565,7 @@ def subscription_link(token):
             dns_rules,
             route_dns_through_tunnel=gsettings.dns_route_through_tunnel_enabled,
         )
+        _omit_custom_routing_for_dns_profiles(headers, auto_select_json)
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
     elif gsettings.dns_route_through_tunnel_enabled and not is_clash:
@@ -1579,6 +1580,7 @@ def subscription_link(token):
             route_dns_through_tunnel=True,
         )
         if any('dns' in profile for profile in profiles):
+            _omit_custom_routing_for_dns_profiles(headers, profiles)
             headers['Content-Type'] = 'application/json; charset=utf-8'
             return json.dumps(profiles, indent=2, ensure_ascii=False), 200, headers
         # Keep the legacy URI subscription unless a DNS block actually matched.
@@ -3460,7 +3462,7 @@ def global_settings():
                     <input type="checkbox" name="happ_dns_from_json_enabled" {% if settings.happ_dns_from_json_enabled %}checked{% endif %}>
                     Передавать флаг «Использовать DNS из JSON»
                 </label>
-                <div class="help">Отправляет заголовок dns-from-json-enable: true. Флаг влияет на Happ только при JSON-конфигурации и выключенном routing-профиле.</div>
+                <div class="help">Отправляет заголовок dns-from-json-enable: true. Happ использует DNS из JSON только без routing-профиля; для подписки с DNS-блоком конфликтующий custom-tunnel-config не отправляется.</div>
             </div>
             
             <div class="form-group">
@@ -3521,7 +3523,7 @@ def global_settings():
                     <input type="checkbox" name="happ_routing_enabled" {% if settings.happ_routing_enabled %}checked{% endif %}>
                     Enable Happ Custom Routing
                 </label>
-                <div class="help">Передавать routing конфигурацию через custom-tunnel-config. Гос. сервисы пойдут мимо туннеля.</div>
+                <div class="help">Передавать routing конфигурацию через custom-tunnel-config. Гос. сервисы пойдут мимо туннеля. Если профиль подписки содержит DNS-блок, этот заголовок не отправляется: Happ не применяет DNS из JSON вместе с routing-профилем.</div>
             </div>
             
             <div class="form-group">
@@ -3981,6 +3983,15 @@ def _normalize_dns_config(value):
     if not isinstance(config, dict):
         raise ValueError("DNS configuration must be a JSON object")
     return json.dumps(config, ensure_ascii=False)
+
+
+def _omit_custom_routing_for_dns_profiles(headers, profiles):
+    if 'custom-tunnel-config' in headers and any('dns' in profile for profile in profiles):
+        headers.pop('custom-tunnel-config')
+        logger.warning(
+            "Omitting Happ custom routing for a JSON DNS subscription because "
+            "Happ does not apply DNS from JSON while a routing profile is active"
+        )
 
 
 def _dns_rule_form_values(form):

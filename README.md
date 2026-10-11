@@ -58,9 +58,9 @@ User -> Web UI / REST API -> SQLite (source of truth)
 
 ## DNS Resolution
 
-DNS blocks are JSON objects stored as Xray `dns` settings and selected by case-insensitive tag substrings. Include tags select matching profile `remarks`; exclude tags take precedence. If multiple active blocks match a profile, the highest-priority block is used. Enable **Route DNS through tunnel** in global settings to route both Xray DNS-module upstream requests (matched by the DNS `tag`) and client TUN TCP/UDP traffic on port 53. Auto Select routes both through its balancer; individual node profiles route both through their proxy outbound. This port-53 rule is needed because client TUN DNS packets are regular network traffic and do not carry the DNS module's `inboundTag`. If no DNS block matches, the existing base64 format remains unchanged. Avoid `+local` DNS server addresses when DNS must follow that routing.
+DNS blocks are JSON objects stored as Xray `dns` settings and selected by case-insensitive tag substrings. Include tags select matching profile `remarks`; exclude tags take precedence. If multiple active blocks match a profile, the highest-priority block is used. The Auto Select profile also matches against its candidate node remarks, so it receives a DNS block that targets a candidate. Enable **Route DNS through tunnel** in global settings to route both Xray DNS-module upstream requests (matched by the DNS `tag`) and client TUN TCP/UDP traffic on port 53. Auto Select routes through its balancer; individual node profiles explicitly route TCP/UDP through their proxy outbound. If no DNS block matches, the existing base64 format remains unchanged. Avoid `+local` DNS server addresses when DNS must follow that routing.
 
-The `dns-from-json-enable` Happ header is controlled by the checkbox in global settings. Legacy base64 and Clash/YAML responses are retained; DNS blocks are injected into JSON-array profiles and do not change the legacy response format.
+The `dns-from-json-enable` Happ header is controlled by the checkbox in global settings. Happ does not apply tunnel DNS from JSON while a routing profile is active. For a JSON subscription containing DNS, the controller therefore omits the conflicting `custom-tunnel-config` header; legacy base64 and Clash/YAML responses are unchanged.
 
 ## Quick Start
 

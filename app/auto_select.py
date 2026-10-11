@@ -209,6 +209,11 @@ def _build_single_profile(uri, remark):
             }
         ],
         'outbounds': [out, {'tag': 'direct', 'protocol': 'freedom'}],
+        'routing': {
+            'rules': [
+                {'network': 'tcp,udp', 'outboundTag': 'proxy'},
+            ],
+        },
     }
 
 
@@ -354,9 +359,29 @@ def build_auto_select_config(all_uris, rules, gsettings):
 
 def apply_dns_rules_to_profiles(profiles, rules, route_dns_through_tunnel=False):
     """Apply the highest-priority DNS rule and optionally route DNS upstreams."""
-    for profile in profiles:
+    candidate_names = [
+        profile.get('remarks', '')
+        for profile in profiles[1:]
+        if profile.get('remarks')
+    ]
+
+    for profile_index, profile in enumerate(profiles):
         profile_name = profile.get('remarks', '')
-        rule = next((candidate for candidate in rules if candidate.matches_config(profile_name)), None)
+        is_auto_select = profile_index == 0 and any(
+            balancer.get('tag') == 'auto-select'
+            for balancer in profile.get('routing', {}).get('balancers', [])
+        )
+        match_names = [profile_name]
+        if is_auto_select:
+            match_names.extend(candidate_names)
+        rule = next(
+            (
+                candidate
+                for candidate in rules
+                if any(candidate.matches_config(name) for name in match_names)
+            ),
+            None,
+        )
         if rule:
             profile['dns'] = rule.get_dns_config()
         if not route_dns_through_tunnel:

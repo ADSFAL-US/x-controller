@@ -144,6 +144,8 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
             db.session.add(GlobalSettings(
                 auto_select_enabled=True,
                 happ_dns_from_json_enabled=True,
+                happ_routing_enabled=True,
+                happ_routing_config='{"Name":"custom"}',
                 dns_route_through_tunnel_enabled=True,
                 auto_select_tag_name="AUTO SELECT",
             ))
@@ -177,6 +179,7 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["dns-from-json-enable"], "true")
+        self.assertNotIn("custom-tunnel-config", response.headers)
         self.assertEqual(response.mimetype, "application/json")
         profiles = response.get_json()
         self.assertEqual(profiles[0]["dns"], {
@@ -231,6 +234,7 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         self.assertEqual(profiles[0]["routing"]["rules"], [
             {"inboundTag": ["dns-out"], "outboundTag": "proxy"},
             {"network": "tcp,udp", "port": "53", "outboundTag": "proxy"},
+            {"network": "tcp,udp", "outboundTag": "proxy"},
         ])
         self.assertNotIn("dns", profiles[1])
 
@@ -294,6 +298,8 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         with self.app.app_context():
             db.session.add(GlobalSettings(
                 auto_select_enabled=False,
+                happ_routing_enabled=True,
+                happ_routing_config='{"Name":"custom"}',
                 happ_dns_from_json_enabled=True,
                 dns_route_through_tunnel_enabled=True,
             ))
@@ -320,6 +326,7 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "text/plain")
         self.assertIn("#EU%20Premium", decoded)
         self.assertEqual(response.headers["dns-from-json-enable"], "true")
+        self.assertEqual(response.headers["custom-tunnel-config"], '{"Name":"custom"}')
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ User -> Web UI / REST API -> SQLite (source of truth)
 
 ## DNS Resolution
 
-DNS blocks are JSON objects stored as Xray `dns` settings and selected by case-insensitive tag substrings. Include tags select matching profile `remarks`; exclude tags take precedence. If multiple active blocks match a profile, the highest-priority block is used. Enable **Route DNS through tunnel** on the Auto Select settings page to add an Xray routing rule for profiles that have a DNS block. DNS requests are tagged through `dns.tag`; Auto Select routes them to its balancer, while a single-node profile routes them to its proxy outbound. Profiles without a DNS block and legacy base64 subscriptions are unchanged. Avoid `+local` DNS server addresses when DNS must follow that routing.
+DNS blocks are JSON objects stored as Xray `dns` settings and selected by case-insensitive tag substrings. Include tags select matching profile `remarks`; exclude tags take precedence. If multiple active blocks match a profile, the highest-priority block is used. Enable **Route DNS through tunnel** in global settings to add an Xray routing rule to every JSON profile that has a matching DNS block. Auto Select routes DNS to its balancer; individual node profiles route DNS through their proxy outbound. If no DNS block matches, the existing base64 format remains unchanged. Avoid `+local` DNS server addresses when DNS must follow that routing.
 
 The `dns-from-json-enable` Happ header is controlled by the checkbox in global settings. Legacy base64 and Clash/YAML responses are retained; DNS blocks are injected into JSON-array profiles and do not change the legacy response format.
 

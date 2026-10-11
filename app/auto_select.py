@@ -212,6 +212,16 @@ def _build_single_profile(uri, remark):
     }
 
 
+def build_single_config_profiles(all_uris):
+    """Build one JSON profile per URI without adding an Auto Select profile."""
+    profiles = []
+    for uri in all_uris:
+        profile = _build_single_profile(uri, _uri_name(uri))
+        if profile:
+            profiles.append(profile)
+    return profiles
+
+
 def build_auto_select_config(all_uris, rules, gsettings):
     """Собирает JSON-массив подписки: автоселект-профиль + все конфиги отдельно.
 
@@ -339,13 +349,7 @@ def build_auto_select_config(all_uris, rules, gsettings):
     }
 
     # JSON-массив подписки: [0] автоселект, [1..n] каждый конфиг отдельно
-    profiles = [config]
-    for uri in all_uris:
-        profile = _build_single_profile(uri, _uri_name(uri))
-        if profile:
-            profiles.append(profile)
-
-    return profiles, len(outbounds)
+    return [config] + build_single_config_profiles(all_uris), len(outbounds)
 
 
 def apply_dns_rules_to_profiles(profiles, rules, route_dns_through_tunnel=False):

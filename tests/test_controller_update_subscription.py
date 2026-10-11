@@ -193,6 +193,42 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         })
         self.assertNotIn("dns", profiles[2])
 
+    def test_global_dns_routing_creates_json_profiles_without_auto_select(self):
+        with self.app.app_context():
+            db.session.add(GlobalSettings(
+                auto_select_enabled=False,
+                dns_route_through_tunnel_enabled=True,
+            ))
+            db.session.add(DnsRule(
+                name="EU DNS",
+                include_tags="EU",
+                dns_config_json='{"servers":["9.9.9.9"]}',
+            ))
+            db.session.add(Subscription(
+                email="dns@example.com",
+                uuid="client-uuid",
+                sub_token="dns-sub-token",
+            ))
+            db.session.commit()
+
+        with (
+            self.app.test_client() as client,
+            patch.object(self.main.xui_client, "panels", [SubscriptionPanel()]),
+        ):
+            response = client.get("/sub/dns-sub-token")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        profiles = response.get_json()
+        self.assertEqual(len(profiles), 2)
+        self.assertEqual(profiles[0]["remarks"], "EU Premium")
+        self.assertEqual(profiles[0]["dns"]["servers"], ["9.9.9.9"])
+        self.assertEqual(profiles[0]["routing"]["rules"], [{
+            "inboundTag": ["dns-out"],
+            "outboundTag": "proxy",
+        }])
+        self.assertNotIn("dns", profiles[1])
+
     def test_dns_rule_api_rejects_invalid_json_configuration(self):
         auth = {"Authorization": "Basic YWRtaW46YWRtaW4="}
         with self.app.test_client() as client:
@@ -233,29 +269,32 @@ class ControllerUpdateSubscriptionTests(unittest.TestCase):
         with self.app.test_client() as client:
             client.post("/login", data={"username": "admin", "password": "admin"})
             response = client.post(
-                "/auto-select/settings",
+                "/settings",
                 data={
                     "dns_route_through_tunnel_enabled": "on",
-                    "auto_select_enabled": "on",
+                    "auto_sync_enabled": "on",
                 },
             )
             settings_response = client.get(
                 "/api/settings",
                 headers={"Authorization": "Basic YWRtaW46YWRtaW4="},
             )
+            settings_page = client.get("/settings")
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(settings_response.json["settings"]["dns_route_through_tunnel_enabled"])
+        self.assertIn(b'name="dns_route_through_tunnel_enabled"', settings_page.data)
 
     def test_legacy_base64_subscription_format_is_preserved(self):
         with self.app.app_context():
             db.session.add(GlobalSettings(
                 auto_select_enabled=False,
                 happ_dns_from_json_enabled=True,
+                dns_route_through_tunnel_enabled=True,
             ))
             db.session.add(DnsRule(
                 name="Legacy DNS rule",
-                include_tags="EU",
+                include_tags="no matching profile",
                 dns_config_json='{"servers":["9.9.9.9"]}',
             ))
             db.session.add(Subscription(

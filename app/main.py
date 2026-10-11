@@ -15,7 +15,11 @@ from flask import Flask, jsonify, request, render_template_string, redirect, url
 from app.xui_client import XUIClient
 from app.models import db, Subscription, GlobalSettings, SubscriptionPreset, ConfigTransformRule, AutoSelectRule, DnsRule, TRANSFORM_FIELDS, TRANSFORM_FIELD_LABELS
 from app.sync_service import SyncService
-from app.auto_select import build_auto_select_config, apply_dns_rules_to_profiles
+from app.auto_select import (
+    apply_dns_rules_to_profiles,
+    build_auto_select_config,
+    build_single_config_profiles,
+)
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Настройка логирования
@@ -1563,6 +1567,24 @@ def subscription_link(token):
         )
         headers['Content-Type'] = 'application/json; charset=utf-8'
         return json.dumps(auto_select_json, indent=2, ensure_ascii=False), 200, headers
+    elif gsettings.dns_route_through_tunnel_enabled and not is_clash:
+        dns_rules = DnsRule.query.filter_by(is_active=True).order_by(
+            DnsRule.priority.desc(),
+            DnsRule.created_at.desc()
+        ).all()
+        profiles = build_single_config_profiles(all_uris)
+        apply_dns_rules_to_profiles(
+            profiles,
+            dns_rules,
+            route_dns_through_tunnel=True,
+        )
+        if any('dns' in profile for profile in profiles):
+            headers['Content-Type'] = 'application/json; charset=utf-8'
+            return json.dumps(profiles, indent=2, ensure_ascii=False), 200, headers
+        # Keep the legacy URI subscription unless a DNS block actually matched.
+        uri_text = '\n'.join(all_uris)
+        encoded = base64.b64encode(uri_text.encode()).decode()
+        return encoded, 200, headers
     else:
         # Legacy fallback: base64-encoded URI list (v2rayN/Shadowrocket/happ)
         uri_text = '\n'.join(all_uris)
@@ -3029,7 +3051,6 @@ def auto_select_settings():
         """
 
     enabled_checked = 'checked' if settings.auto_select_enabled else ''
-    dns_route_checked = 'checked' if settings.dns_route_through_tunnel_enabled else ''
     tag_name = settings.auto_select_tag_name or '⚡ AUTO SELECT'
     ping_timeout = settings.auto_select_ping_timeout_ms or 2000
     ping_interval = settings.auto_select_ping_interval_sec or 60
@@ -3085,13 +3106,6 @@ def auto_select_settings():
                         <input type="checkbox" name="auto_select_enabled" {enabled_checked} style="width:auto;">
                         Enable Auto Select (добавлять конфиг автовыбора с id 0 в подписки)
                     </label>
-                </div>
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" name="dns_route_through_tunnel_enabled" {dns_route_checked} style="width:auto;">
-                        Маршрутизировать DNS-запросы через туннель
-                    </label>
-                    <div class="help">Для профилей с DNS-блоком: DNS-запросы пойдут через выбранную Auto Select ноду или proxy-outbound профиля. Профили без DNS-блока не меняются.</div>
                 </div>
                 <div class="form-group">
                     <label>Config Name (tag):</label>
@@ -3151,7 +3165,6 @@ def auto_select_settings_save():
     """Сохранение общих настроек автовыбора."""
     settings = GlobalSettings.get()
     settings.auto_select_enabled = request.form.get('auto_select_enabled') == 'on'
-    settings.dns_route_through_tunnel_enabled = request.form.get('dns_route_through_tunnel_enabled') == 'on'
     settings.auto_select_tag_name = request.form.get('auto_select_tag_name', '').strip()
     settings.auto_select_ping_timeout_ms = int(request.form.get('auto_select_ping_timeout_ms', 2000) or 2000)
     settings.auto_select_ping_interval_sec = int(request.form.get('auto_select_ping_interval_sec', 60) or 60)
@@ -3306,6 +3319,9 @@ def global_settings():
         settings.custom_direct_countries = request.form.get('custom_direct_countries', '')
         settings.auto_sync_enabled = request.form.get('auto_sync_enabled') == 'on'
         settings.auto_sync_interval_minutes = int(request.form.get('auto_sync_interval_minutes', 30) or 30)
+        settings.dns_route_through_tunnel_enabled = (
+            request.form.get('dns_route_through_tunnel_enabled') == 'on'
+        )
         
         # Happ metadata
         settings.sub_expire_enabled = request.form.get('sub_expire_enabled') == 'on'
@@ -3425,6 +3441,17 @@ def global_settings():
                 <div class="help">Минимум 5 минут между синхронизациями</div>
             </div>
             
+            <hr style="margin: 30px 0;">
+            <h3>DNS Resolution</h3>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" name="dns_route_through_tunnel_enabled" {% if settings.dns_route_through_tunnel_enabled %}checked{% endif %}>
+                    Маршрутизировать DNS-запросы через туннель
+                </label>
+                <div class="help">Для каждого JSON-профиля с DNS-блоком отправлять DNS-запросы через его туннель или выбранную Auto Select ноду. Если ни один DNS-блок не подошёл, формат подписки останется прежним.</div>
+            </div>
+
             <hr style="margin: 30px 0;">
             <h3>Happ Subscription Metadata</h3>
 
